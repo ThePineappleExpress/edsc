@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# EDSC runtime data (user config / cached state)
+/.edsc-local/
+
+# Editor
+*.swp
+.DS_Store
