@@ -1,0 +1,99 @@
+name: Release
+
+# Tag a commit `v*` (e.g. v0.1.0) to build binaries and publish a GitHub
+# Release. Run manually (workflow_dispatch) to get build artifacts without
+# publishing a release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1
+
+      - name: Install package
+        run: pip install ".[dev]"
+
+      - name: Run tests
+        run: pytest
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu-22.04 (not -latest) so the binary links against an older
+          # glibc and runs on more distros.
+          - os: ubuntu-22.04
+            asset: edsc-linux-x86_64.tar.gz
+          - os: windows-latest
+            asset: edsc-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1
+
+      - name: Install package + PyInstaller
+        run: pip install . pyinstaller
+
+      - name: Build binary
+        run: pyinstaller edsc.spec
+
+      # tar keeps the executable bit, which upload-artifact's zip would drop.
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: tar -C dist -czf "${{ matrix.asset }}" edsc
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: Copy-Item dist\edsc.exe "${{ matrix.asset }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ github.ref_name }}" assets/*
+          --repo "${{ github.repository }}"
+          --title "${{ github.ref_name }}"
+          --generate-notes
