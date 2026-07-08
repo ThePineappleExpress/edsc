@@ -233,3 +233,5 @@ tests/               headless tests: model, stations, watcher, locator, core,
 
 The domain core (`model.py`, `journal/`, `core.py`, `stations.py`) is Qt-free
 and fully unit-tested; the GUI is a thin rendering layer on top.
+
+Bugs? Suggestions? E-mail dev@thepineapple.express
