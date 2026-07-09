@@ -42,6 +42,10 @@ jobs:
           # glibc and runs on more distros.
           - os: ubuntu-22.04
             asset: edsc-linux-x86_64.tar.gz
+          # AppImage for SteamOS / Steam Deck and other immutable distros.
+          - os: ubuntu-22.04
+            asset: edsc-linux-x86_64.AppImage
+            appimage: true
           - os: windows-latest
             asset: edsc-windows-x86_64.exe
     runs-on: ${{ matrix.os }}
@@ -60,11 +64,18 @@ jobs:
         run: pip install . pyinstaller
 
       - name: Build binary
+        if: ${{ !matrix.appimage }}
         run: pyinstaller edsc.spec
+
+      - name: Build AppImage
+        if: ${{ matrix.appimage }}
+        run: |
+          bash packaging/appimage/build-appimage.sh
+          cp dist/edsc-x86_64.AppImage "${{ matrix.asset }}"
 
       # tar keeps the executable bit, which upload-artifact's zip would drop.
       - name: Package (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !matrix.appimage
         run: tar -C dist -czf "${{ matrix.asset }}" edsc
 
       - name: Package (Windows)

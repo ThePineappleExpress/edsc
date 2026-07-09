@@ -2,9 +2,16 @@
 """PyInstaller spec: builds a single-file `edsc` binary for the current OS.
 
 Usage: pyinstaller edsc.spec
+
+Set EDSC_ONEDIR=1 to build an unpacked `dist/edsc/` directory instead of a
+single file - used by packaging/appimage/build-appimage.sh, where onefile's
+extract-to-tmpdir-on-every-launch would be pointless inside an AppImage.
 """
 
+import os
 import sys
+
+onedir = bool(os.environ.get("EDSC_ONEDIR"))
 
 hiddenimports = []
 if sys.platform.startswith("linux"):
@@ -45,9 +52,9 @@ else:
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
+    *([] if onedir else [a.binaries, a.datas]),
     [],
+    exclude_binaries=onedir,
     name="edsc",
     debug=False,
     bootloader_ignore_signals=False,
@@ -63,3 +70,13 @@ exe = EXE(
     entitlements_file=None,
     icon=_exe_icon,
 )
+
+if onedir:
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=False,
+        name="edsc",
+    )

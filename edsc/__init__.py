@@ -29,7 +29,7 @@ Carrier contents are "best guess" with an option to adjust manually.
 
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 
 # Steam AppID for Elite Dangerous (used to locate Proton compatdata prefixes).
 ELITE_STEAM_APPID = "359320"

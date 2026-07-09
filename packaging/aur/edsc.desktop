@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=EDSC
+GenericName=Elite Dangerous colonisation overlay
+Comment=Companion overlay for Elite: Dangerous that tracks colonisation construction material needs
+Exec=edsc
+Icon=edsc
+Terminal=false
+Categories=Game;
+Keywords=Elite;Dangerous;overlay;colonisation;colonization;
+StartupWMClass=edsc

@@ -1,0 +1,34 @@
+# Maintainer: ThePineappleExpress <dev@thepineapple.express>
+#
+# AUR package for EDSC (ED Supply Chain). The desktop file lives next to this
+# PKGBUILD, so publishing to the AUR means pushing PKGBUILD, .SRCINFO and
+# edsc.desktop. Regenerate .SRCINFO after any change:
+#   makepkg --printsrcinfo > .SRCINFO
+
+pkgname=edsc
+pkgver=0.1.2
+pkgrel=1
+pkgdesc="Companion overlay for Elite: Dangerous that tracks colonisation construction material needs (ED Supply Chain)"
+arch=('any')
+url="https://github.com/ThePineappleExpress/edsc"
+license=('GPL-3.0-or-later')
+depends=('python' 'pyside6' 'python-xlib' 'hicolor-icon-theme')
+makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+        "$pkgname.desktop")
+sha256sums=('9b101cf54f44a2dd29d0cb65709005f2daac646d136bb7a6758c764b732ad9c3'
+            '3c94b32a21e18135512fd585cf2d7066b9d07515ba78ca49996c18e1c203869c')
+
+build() {
+  cd "$pkgname-$pkgver"
+  python -m build --wheel --no-isolation
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  install -Dm644 edsc/assets/icon.png \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/$pkgname.png"
+  install -Dm644 "$srcdir/$pkgname.desktop" \
+    "$pkgdir/usr/share/applications/$pkgname.desktop"
+}
