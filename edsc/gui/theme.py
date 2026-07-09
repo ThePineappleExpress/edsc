@@ -72,6 +72,12 @@ def panel_stylesheet(alpha: int, font_pt: int) -> str:
     }}
     QToolButton:hover {{ background: rgba(90,54,14,220); }}
     QToolButton:checked {{ background: #6b3a08; border-color: #ff8214; }}
+    QToolButton#completeBtn {{
+        color: #60b06c; background: rgba(26,40,30,180);
+        border: 1px solid rgba(96,176,108,140);
+        padding: 4px 8px; font-weight: 600;
+    }}
+    QToolButton#completeBtn:hover {{ background: rgba(34,62,42,220); }}
     QProgressBar {{
         background: rgba(40,34,26,160); border: none; border-radius: 4px;
         height: 6px; text-align: center; color: transparent;
