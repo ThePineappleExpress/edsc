@@ -96,6 +96,46 @@ reappear, then live-tails the newest journal for updates.
 
 ## Install & run
 
+### Prebuilt binaries
+
+Download from the [Releases page](https://github.com/ThePineappleExpress/edsc/releases):
+
+| Asset | For |
+| ----- | --- |
+| `edsc-windows-x86_64.exe` | Windows |
+| `edsc-linux-x86_64.AppImage` | Any Linux distro - **recommended for SteamOS / Steam Deck** |
+| `edsc-linux-x86_64.tar.gz` | Generic Linux (plain binary) |
+
+The AppImage needs no installation - make it executable and run it:
+
+```bash
+chmod +x edsc-linux-x86_64.AppImage
+./edsc-linux-x86_64.AppImage
+```
+
+### Arch Linux
+
+Build and install the native package (pulls Qt from the system `pyside6`
+package instead of bundling it, ~200 KiB installed):
+
+```bash
+git clone https://github.com/ThePineappleExpress/edsc.git
+cd edsc/packaging/aur
+makepkg -si
+```
+
+### SteamOS / Steam Deck
+
+Use the **AppImage** - it runs from your home directory, so it doesn't touch
+SteamOS' read-only root filesystem and survives SteamOS updates (which wipe
+anything installed with `pacman`). In **Desktop Mode**: download it, make it
+executable (right-click → *Properties → Permissions → Is executable*, or the
+`chmod` above), and run it. Note that in **Game Mode** gamescope shows only the
+game's own window, so external overlays like EDSC can't appear over the game
+there - play in Desktop Mode when you want the overlay.
+
+### From source
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
@@ -232,6 +272,9 @@ edsc/
     app.py           QApplication + tray bootstrap
 tests/               headless tests: model, stations, watcher, locator, core,
                      location tracking, name normalisation (no display, no network)
+packaging/
+  aur/               Arch Linux PKGBUILD + desktop entry (AUR-ready)
+  appimage/          build-appimage.sh - packs the PyInstaller build into an AppImage
 ```
 
 The domain core (`model.py`, `journal/`, `core.py`, `stations.py`) is Qt-free

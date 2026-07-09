@@ -11,6 +11,12 @@ venv/
 .pytest_cache/
 .ruff_cache/
 
+# makepkg work products (readme suggests running makepkg -si in packaging/aur)
+packaging/aur/src/
+packaging/aur/pkg/
+packaging/aur/*.tar.gz
+packaging/aur/*.pkg.tar.*
+
 # EDSC runtime data (user config / cached state)
 /.edsc-local/
 
