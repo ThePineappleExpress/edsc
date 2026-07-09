@@ -29,5 +29,8 @@ edsc-gui = "edsc.__main__:main"
 where = ["."]
 include = ["edsc*"]
 
+[tool.setuptools.package-data]
+edsc = ["assets/*.png"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -62,3 +62,17 @@ def state_dir() -> Path:
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def asset_path(name: str) -> Path:
+    """Resolve a bundled asset, working both from source and a frozen build.
+
+    PyInstaller unpacks bundled data into ``sys._MEIPASS`` at runtime; in a
+    normal checkout the assets live next to this module in ``edsc/assets``.
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidate = Path(meipass) / "edsc" / "assets" / name
+        if candidate.exists():
+            return candidate
+    return Path(__file__).resolve().parent / "assets" / name
