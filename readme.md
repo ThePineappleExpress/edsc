@@ -27,8 +27,11 @@ game (via a global hotkey), as well as when the overlay is focused. The global
 hotkey is only grabbed **while the game window is focused**, so the combos keep
 working normally in your other applications.
 
-Right-click a project's tab to **remove** it (useful once a construction is
-finished or abandoned) - docking at the site again brings it back.
+Once every commodity of a construction has been delivered, a green
+**✔ Complete construction** button appears below the list - click it to clear
+the finished site from the overlay. Right-click a project's tab to **remove**
+it at any time (useful for abandoned sites) - docking at the site again brings
+it back.
 
 ## Nearest stations (⚑ Stations tab)
 

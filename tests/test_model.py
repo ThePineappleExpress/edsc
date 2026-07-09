@@ -131,6 +131,21 @@ def _depot(market_id, resources, **kw):
     }
 
 
+def test_all_delivered_reflects_outstanding_lines():
+    state = AppState()
+    state.apply_event(_depot(1, [("steel", 100, 40), ("water", 50, 50)]))
+    proj = state.projects[1]
+    assert proj.all_delivered is False
+    state.apply_event(_depot(1, [("steel", 100, 100), ("water", 50, 50)]))
+    assert proj.all_delivered is True
+
+
+def test_all_delivered_false_for_empty_project():
+    state = AppState()
+    state.apply_event(_depot(1, []))
+    assert state.projects[1].all_delivered is False
+
+
 def test_combined_project_sums_across_constructions():
     state = AppState()
     state.apply_event(_depot(1, [("steel", 100, 40), ("water", 50, 50)]))

@@ -338,6 +338,18 @@ class OverlayWindow(QWidget):
         # at the top and the footer/carrier rows stay at the bottom.
         root.addWidget(self.table, 1)
 
+        # Shown only when every commodity of the viewed construction has been
+        # delivered: clicking removes the finished project (and its tab) so
+        # completed sites don't linger in the overlay.
+        self.complete_btn = self._tool(
+            "✔ Complete construction",
+            "All commodities delivered — remove this construction from the overlay",
+        )
+        self.complete_btn.setObjectName("completeBtn")
+        self.complete_btn.clicked.connect(self._complete_construction)
+        self.complete_btn.setVisible(False)
+        root.addWidget(self.complete_btn)
+
         # Footer: totals + toggles.
         footer = QHBoxLayout()
         self.totals_label = QLabel("")
@@ -625,7 +637,27 @@ class OverlayWindow(QWidget):
         self.totals_label.setText(
             f"{delivered:,} / {required:,} t delivered · {remaining:,} t to go"
         )
+        # Offer to clear the finished site (real projects only: the combined
+        # view aggregates several sites and can't be "completed" as one).
+        self.complete_btn.setVisible(
+            proj.market_id != COMBINED_MARKET_ID
+            and (proj.complete or proj.all_delivered)
+        )
         self._update_carrier_label(state)
+
+    def _complete_construction(self) -> None:
+        """Remove the finished construction currently in view (and its tab)."""
+        if self._state is None:
+            return
+        mid = self._selected_market() if self.tabs.isVisible() else None
+        if mid is None:  # tab bar hidden: the single remaining project is shown
+            projects = self._state.project_list()
+            mid = projects[0].market_id if projects else None
+        if mid is None or mid not in self._state.projects:
+            return
+        self._state.remove_project(mid)
+        self.project_removed.emit()
+        self.refresh(self._state)
 
     def _render_empty(self) -> None:
         self.title_label.setText("No construction projects yet")
@@ -635,6 +667,7 @@ class OverlayWindow(QWidget):
         self._current_rows = []
         self.model.set_rows([])
         self.totals_label.setText("")
+        self.complete_btn.setVisible(False)
         self._update_carrier_label(self._state)
 
     #  nearest stations -

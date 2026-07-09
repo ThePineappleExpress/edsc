@@ -136,6 +136,12 @@ class Project:
         total = self.total_required()
         return (self.total_provided() / total) if total else 0.0
 
+    @property
+    def all_delivered(self) -> bool:
+        """Every required commodity has been delivered in full."""
+        total = self.total_required()
+        return total > 0 and self.total_provided() >= total
+
     def rows(
         self, cargo: dict[str, int], carrier: dict[str, int] | None = None
     ) -> list[CommodityRow]:
