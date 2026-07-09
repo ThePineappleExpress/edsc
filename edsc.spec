@@ -25,7 +25,7 @@ a = Analysis(
     ["edsc/__main__.py"],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[("edsc/assets/icon.png", "edsc/assets")],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -35,6 +35,12 @@ a = Analysis(
 )
 
 pyz = PYZ(a.pure)
+
+# Executable icon: Windows wants an .ico, other platforms take the PNG.
+if sys.platform.startswith("win"):
+    _exe_icon = "icon.ico"
+else:
+    _exe_icon = "icon.png"
 
 exe = EXE(
     pyz,
@@ -55,4 +61,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=_exe_icon,
 )

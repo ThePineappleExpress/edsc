@@ -36,31 +36,20 @@ def _prefer_xcb() -> None:
 
 _prefer_xcb()
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from .. import core
 from ..config import Config
 from ..engine import Engine
+from ..paths import asset_path
 from ..platform.hotkeys import GlobalHotkeys
-from . import theme
 from .overlay import OverlayWindow
 from .settings_dialog import SettingsDialog
 
 
 def _app_icon() -> QIcon:
-    pm = QPixmap(64, 64)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setPen(Qt.NoPen)
-    p.setBrush(theme.ORANGE)
-    p.drawEllipse(6, 6, 52, 52)
-    p.setBrush(QColor(12, 14, 18))
-    p.drawEllipse(18, 18, 28, 28)
-    p.end()
-    return QIcon(pm)
+    return QIcon(str(asset_path("icon.png")))
 
 
 class Application:
