@@ -56,7 +56,16 @@ def _has_journals(path: Path) -> bool:
 
 
 def _steam_roots() -> list[Path]:
-    """Candidate Steam install roots on Linux (Flatpak + native + Snap)."""
+    """Candidate Steam install roots (Flatpak + native + Snap on Linux)."""
+    if sys.platform == "win32":
+        return [
+            Path(base) / "Steam"
+            for base in (
+                os.environ.get("ProgramFiles(x86)"),
+                os.environ.get("ProgramFiles"),
+            )
+            if base
+        ]
     home = Path.home()
     roots = [
         # Flatpak Steam (com.valvesoftware.Steam)
@@ -95,16 +104,22 @@ def _library_folders(steam_root: Path) -> list[Path]:
     return libs
 
 
-def _proton_candidates() -> list[Path]:
-    """All plausible Proton-prefix journal dirs for Elite Dangerous."""
-    candidates: list[Path] = []
+def steam_library_folders() -> list[Path]:
+    """Every Steam library folder across all known Steam roots (deduped)."""
+    libs: list[Path] = []
     for root in _steam_roots():
         for lib in _library_folders(root):
-            prefix = (
-                lib / "steamapps" / "compatdata" / ELITE_STEAM_APPID / _PROTON_USER_TAIL
-            )
-            candidates.append(prefix)
-    return candidates
+            if lib not in libs:
+                libs.append(lib)
+    return libs
+
+
+def _proton_candidates() -> list[Path]:
+    """All plausible Proton-prefix journal dirs for Elite Dangerous."""
+    return [
+        lib / "steamapps" / "compatdata" / ELITE_STEAM_APPID / _PROTON_USER_TAIL
+        for lib in steam_library_folders()
+    ]
 
 
 def platform_candidates() -> list[Path]:
@@ -113,14 +128,6 @@ def platform_candidates() -> list[Path]:
     if sys.platform == "win32":
         userprofile = Path(os.environ.get("USERPROFILE", str(home)))
         return [userprofile / _SAVED_GAMES_TAIL]
-    if sys.platform == "darwin":
-        return [
-            home / "Library/Application Support/Frontier Developments/Elite Dangerous",
-            # CrossOver/Wine bottle fallback.
-            home
-            / "Library/Application Support/CrossOver/Bottles/EliteDangerous/drive_c/users/crossover"
-            / _SAVED_GAMES_TAIL,
-        ]
     # Linux (and anything else): Proton prefixes are the norm.
     return _proton_candidates()
 

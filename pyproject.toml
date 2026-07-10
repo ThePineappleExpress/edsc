@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ed-supply-chain"
-version = "0.1.2"
+dynamic = ["version"]
 description = "EDSC - a companion overlay for Elite: Dangerous that tracks colonisation construction material needs against your cargo."
 readme = "readme.md"
 requires-python = ">=3.10"
@@ -24,6 +24,10 @@ edsc = "edsc.__main__:main"
 
 [project.gui-scripts]
 edsc-gui = "edsc.__main__:main"
+
+# Version is single-sourced from edsc/__init__.py (__version__).
+[tool.setuptools.dynamic]
+version = { attr = "edsc.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]

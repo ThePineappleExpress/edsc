@@ -1,6 +1,6 @@
 pkgbase = edsc
 	pkgdesc = Companion overlay for Elite: Dangerous that tracks colonisation construction material needs (ED Supply Chain)
-	pkgver = 0.1.2
+	pkgver = 0.1.3
 	pkgrel = 1
 	url = https://github.com/ThePineappleExpress/edsc
 	arch = any
@@ -13,7 +13,7 @@ pkgbase = edsc
 	depends = pyside6
 	depends = python-xlib
 	depends = hicolor-icon-theme
-	source = edsc-0.1.2.tar.gz::https://github.com/ThePineappleExpress/edsc/archive/refs/tags/v0.1.2.tar.gz
+	source = edsc-0.1.3.tar.gz::https://github.com/ThePineappleExpress/edsc/archive/refs/tags/v0.1.3.tar.gz
 	source = edsc.desktop
 	sha256sums = 9b101cf54f44a2dd29d0cb65709005f2daac646d136bb7a6758c764b732ad9c3
 	sha256sums = 3c94b32a21e18135512fd585cf2d7066b9d07515ba78ca49996c18e1c203869c

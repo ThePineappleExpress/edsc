@@ -1,3 +1,48 @@
+```
+                                        ███▓██                                 
+                                  ███▓██▓██▓█████                              
+                            ███▓▓██▓▒▓█▓▓▒▒▓▓█▓▓███                            
+                        ██▓██▓▒▒▒▒██▓▒▒▒▒▓▓▒▓▓█▓▓▓████                         
+                      ██▓█▒▒▒▒▓█▓▓▒▒▒▒▒▓▓▒▓▓▓▓▓█▓▓▓▓▓███                       
+                    ████▒▒▒██▓▓▒▒▒▒▒▒▓▒▓▓▓▓▓▓▓▓▓█▓▓▓▓▓▓████                    
+                  █▓█▓▒▓█▓▓▒▒▒▒▒▒▒▓▓▒▓▓▓▓▓▓▓▓▓▓▓▓█▓▓▓▓▓▓▓▓████                 
+                █▓▓▓██▓▒▒▒▒▒▒▒▒▒▓▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓█▓▓▓▓▓▓▓▓▓████               
+█████         █▓▓█▓▓▒▒▒▒▒▒▒▒▒▒▓▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓██▓▓▓▓▓▓▓▓▓▓▓████       █████
+██▒▒███       █▓▓▓▒▒▒▒▒▒▒▒▒▒▓▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓██▓▓▓▓▓▓▓▓▓▓▓███     ███▒░██
+██▒  ░▓██     █▓▓▓▓▒▒▒▒▒▒▒▓▒▒▓▓▓▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓██▓▓▓▓▓▓▓▓▓███    ██▓░  ▒██
+ ██░   ░▒███  █▓▓▒▓▓▒▒▒▒▓▒▒▓▓▓▓▓█▓█▓▓▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓█▓▓▓▓▓▓▓█████ ███▒░   ░██ 
+  ██▒     ▒████▓▒▒▒█▓▒▒▒▓▒▓▓▓▓▓███▓▓▓▓▓█▓▓▓▓▓▓▓▓▓▓▓▓▓▓█▓▓▓▓▓████████▒     ░██  
+   ███░     ░▓██▒▒▒▓▓▒▓▒▓▓▓▓▓▓▓▓▓▓▓▓▓██▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓█▓▓▓██████▓░     ░███   
+     ███▒      ▒█▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓███████▒      ▒███     
+      █▓░▒▒      ▒▒▒██▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓████▒▒▒      ▒▒░▓█      
+      ██░        ░▓  ░██▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓██████▒  ▓░        ░██      
+       ██░        ▓░   ░▓█▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓███████▓░   ░▓         ██       
+        ██▒       ░▓░     ▒█▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓█████████▒     ░▓░       ▒██        
+          ██▒       ▓▓▒     ░█▓▓▓▓▓▓▓█▓█▓█████████▒     ░▓▓░      ▒██          
+           ██▒▒░    ▓ ░▒▒░    ░▓█▓▓███▒█▒██████▓░     ▒▒░ ▓░   ░▒▒██           
+           ██░ ░    ▒▒   ▒▒     ▒████▓░▓▒▓████▒     ▒▒   ▒▒    ░ ░██           
+           ██▓       ░▓▒░▒▒    ░█████▓░ ░▓█████▒    ▒▒░▒▓░       ▓██           
+            ███▒       ░▓░    ▒█████▓░▓░▓░▓█████▒    ░▓░       ▒███            
+               ██▒░    ▒░     ▒███▓▒▒▒░▒░▒▒▒▓███▒     ░▒    ░▒██               
+                 ██▓░   ░▓▒       ░░▓▒▒▒▒▒▓░░░      ▒▓░   ░▓███                
+                   ██▓░    ▒▓░       ▒▒ ░▒       ░▓▒    ░▓██                   
+                   ██ ░▒▒░   ░▓▒     ░▓ ▓░     ▒▓░    ▒▓░ ██                   
+    █████████████████████████████▓░   ▓▒▓░▓██████████▓░ ░████████████████      
+    █▓▓▓▓▓▓▓▓▓▓▓▓▓▓█ █▓▓▓▓▓▓▓▓▓▓▓▓▓█▒ ░██▓▓▓▓▓▓▓▓▓▓▓▓▒██████▒▓▓▓▓▓▓▓▓▓▓▒▓█     
+    █▓▓▓▒▓▓▓▓▓▓▓▓▓▓█ █▓▓▓▒▒▓▓▓▓▓▓▓▓▒██▒██▓▓▓▒█████▓▓▓▓▓█ ██▓▓▓▒▒▓███▓▓▓▓▓▓█    
+    █▓▓▓▒██████████  █▓▓▓▒███▓▒▒▓█▓▓▒▓▓█▓▓▓▒█░░░░▓█▓▓▓▒█ █▒▓▓▒████████▓▓▓▒█    
+    █▓▓▓▒██████████  █▓▓▓▒█ ███▒░█▓▓▓▒█▒█▓▓▒▓██▓████████ █▓▓▓▒█      ███████   
+    █▓▓▓▓▓▓▓▓▓▓▓▓▒█  █▓▓▓▒█    ███▓▓▓▒█▓█▓▓▓▓▓▓▓▒▒▒▒▓█████▓▓▒▓█                
+    █▓▓▓▒▒▓▓▓▓▓▓▓▒█  █▓▓▓▒█      █▒▓▒▒█░▓▓███▓▓▓▓▓▓▓▓▒▒███▒▓▒▓█                
+    █▓▒▒▒██████████  █▓▒▒▒█     ██▒▒▒▒▓░▓▒▓█████████▒▒▒▓██▒▒▒▒█      ███████   
+    █▓▒▒▒██          █▓▒▒▒█   ███▓▒▒▒█░█▒▒▒▒█     ██▒▒▒▓██▒▒▒▒██     █▓▒▒▒██   
+    █▓▒▒▒▒▒▒▒▒▒▒▒▒▒███▓▒▒▒▒▒▒▒▒▒▒▒▒▒██░▓▓▒▒▒▒██████▒▒▒▒████▒▒▒▒▒▓███▓▒▒▒▒▓█    
+    █▓▒▒▒▒▒▒▒▒▒▒▒▒▒███▓▒▒▒▒▒▒▒▒▒▒▒▓███░░█▓▒▒▒▒▒▒▒▒▒▒▒▒▓█  ██▓▒▒▒▒▒▒▒▒▒▒▒▓█     
+    ████████████████ ██████████████ ██░ ░██████████████    ██████████████      
+                                     █████                                     
+                                                                               
+                                                                               
+ ```
 # ED Supply Chain (EDSC)
 
 A standalone companion **overlay** for *Elite: Dangerous* that tracks the
@@ -39,23 +84,31 @@ The trailing **⚑ Stations** tab answers *"where do I buy all this?"*: it queri
 the community [Spansh](https://spansh.co.uk) station search for the nearest
 **large-pad** stations selling the commodities you're still short of (aggregated
 across all your active constructions, minus what's already in your hold and on
-your carrier), ranked by how much of your list each station covers, then by
-distance. Hover a row to see exactly which needed commodities a station stocks
-and how fresh its market data is.
+your carrier), ranked by how many list items each station covers, then by
+distance. The top five matches are shown; when the best station doesn't stock
+everything, a second **"Fill the rest at"** table lists complementary stops that
+cover what the best one is missing. Hover a row to see exactly which needed
+commodities a station stocks and how fresh its market data is.
 
+- The **Match/Coverage** column shows both breadth and depth: `3/8 (74%)` means
+  the station stocks 3 of the 8 commodities you need, with enough supply to fill
+  74 % of the outstanding tonnage of those 3.
+- **Click a System cell** to copy the system name to the clipboard, ready to
+  paste into the in-game galaxy map.
+- Station markers: ★ orbital, ● surface, ▻ fleet carrier.
 - Your current system is the search origin, tracked from jump/location events -
   you don't need to dock first.
 - A station only counts as stocking a commodity when its supply covers your
   remaining shortfall (capped at a pragmatic 100 t floor for large shortfalls),
   so a market listing 2 t against a 5,000 t need doesn't light up.
-- **Include planets** toggles surface stations; **↻ Search** forces a refresh.
-  The search also re-runs automatically when your system or the set of needed
-  commodities changes.
+- **Include planets** toggles surface stations, **Include carriers** toggles
+  fleet carriers; **↻ Search** forces a refresh. The search also re-runs
+  automatically when your system or the set of needed commodities changes.
 - Market data is community-sourced (EDDN) and can be stale - check the tooltip's
   *"Market data from"* line before a long haul.
 
 This is EDSC's **only** network feature; everything else works entirely from
-local journal files. 
+local journal files.
 
 ## Fleet carrier column
 
@@ -224,7 +277,6 @@ EDSC auto-detects the journal folder per platform:
   Elite Dangerous (AppID `359320`), including extra Steam library folders, e.g.
   `~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/359320/pfx/drive_c/users/steamuser/Saved Games/Frontier Developments/Elite Dangerous`
 - **Windows** - `%USERPROFILE%\Saved Games\Frontier Developments\Elite Dangerous`
-- **macOS** - `~/Library/Application Support/Frontier Developments/Elite Dangerous`
 
 Override it in **Settings**, or with the `EDSC_JOURNAL_DIR` environment variable.
 
@@ -236,6 +288,16 @@ an **XWayland (X11)** app, so on Linux EDSC runs itself on XWayland too (it sets
 `QT_QPA_PLATFORM=xcb`) - that puts the overlay and the game on the same X server,
 which is what makes focus detection and click-through work. Set
 `QT_QPA_PLATFORM` yourself to override. On KDE/GNOME Wayland this is transparent.
+
+## HUD colour matching
+
+If you have recoloured your in-game HUD (the `MatrixRed` / `MatrixGreen` /
+`MatrixBlue` values in `GraphicsConfiguration.xml` or
+`GraphicsConfigurationOverride.xml`), EDSC reads the same matrix at startup and
+tints the overlay to match. The green/yellow/red delivery-status colours are
+deliberately left alone so they keep their meaning. Both files are auto-detected
+next to the game install / journal folder; point the `EDSC_GRAPHICS_CONFIG`
+environment variable at either file to override.
 
 ## Development
 
@@ -255,6 +317,7 @@ edsc/
   core.py            journal-dir resolution, state bootstrap, persistence
   engine.py          Qt engine: background journal thread → GUI signals
   stations.py        Spansh nearest-station search client (the ⚑ Stations tab)
+  hud_colors.py      reads the in-game HUD colour matrix from the graphics config
   journal/
     locator.py       cross-platform journal-folder discovery
     watcher.py       poll-based tailer (rollover-safe) + Cargo.json watch
@@ -271,7 +334,8 @@ edsc/
     theme.py         Elite Dangerous HUD palette + stylesheet
     app.py           QApplication + tray bootstrap
 tests/               headless tests: model, stations, watcher, locator, core,
-                     location tracking, name normalisation (no display, no network)
+                     location tracking, name normalisation, HUD colours/theme
+                     (no display, no network)
 packaging/
   aur/               Arch Linux PKGBUILD + desktop entry (AUR-ready)
   appimage/          build-appimage.sh - packs the PyInstaller build into an AppImage

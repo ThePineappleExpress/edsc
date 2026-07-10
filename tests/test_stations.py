@@ -6,7 +6,8 @@ from unittest import mock
 from edsc import stations
 
 
-def _station(name, system, distance, arrival, large, market, planetary=False):
+def _station(name, system, distance, arrival, large, market, planetary=False,
+             station_type="Coriolis Starport"):
     """Build a raw Spansh-style station dict with a full market array."""
     return {
         "name": name,
@@ -15,7 +16,7 @@ def _station(name, system, distance, arrival, large, market, planetary=False):
         "distance_to_arrival": arrival,
         "has_large_pad": large,
         "is_planetary": planetary,
-        "type": "Coriolis Starport",
+        "type": station_type,
         "market_id": abs(hash(name)) % 1_000_000,
         "market_updated_at": "2026-07-01T00:00:00Z",
         "market": [
@@ -166,6 +167,40 @@ def test_planetary_excluded_when_toggled_off():
     assert [r.name for r in results] == ["Orbit"]
 
 
+def test_carriers_included_by_default():
+    carrier = _station("Hauler", "Sol", 1.0, 10, True, {"Steel": 5000},
+                       station_type="Drake-Class Carrier")
+
+    @contextmanager
+    def fake(req, timeout=0):
+        payload = {"results": [carrier]}
+        yield io.BytesIO(json.dumps(payload).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations("Sol", ["Steel"])
+    assert [r.name for r in results] == ["Hauler"]
+    assert results[0].is_carrier
+
+
+def test_carriers_excluded_when_toggled_off():
+    carrier = _station("Hauler", "Sol", 1.0, 10, True, {"Steel": 5000},
+                       station_type="Drake-Class Carrier")
+    orbital = _station("Orbit", "Sol", 2.0, 20, True, {"Steel": 5000})
+
+    @contextmanager
+    def fake(req, timeout=0):
+        payload = {"results": [carrier, orbital]}
+        yield io.BytesIO(json.dumps(payload).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations(
+            "Sol", ["Steel"], include_carriers=False
+        )
+    # Spansh has no carrier filter to push into the query, so carriers are
+    # dropped in scoring instead.
+    assert [r.name for r in results] == ["Orbit"]
+
+
 def test_query_cap_still_scores_against_full_list():
     """Commodities beyond the query cap still count in coverage scoring."""
     needed = {f"Commodity{i}": 1000 - i for i in range(stations.MAX_COMMODITIES + 2)}
@@ -189,3 +224,83 @@ def test_query_cap_still_scores_against_full_list():
     # Scoring uses the full needed list, not just the queried subset.
     assert results[0].needed_total == stations.MAX_COMMODITIES + 2
     assert results[0].match_count == stations.MAX_COMMODITIES + 2
+
+
+def test_coverage_full_when_supply_meets_demand():
+    """A matched station with enough of each commodity reports 100% coverage."""
+    st = _station("Full", "Sol", 1.0, 10, True,
+                  {"Steel": 5000, "Aluminium": 5000})
+
+    @contextmanager
+    def fake(req, timeout=0):
+        payload = {"results": [st]}
+        yield io.BytesIO(json.dumps(payload).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations("Sol", {"Steel": 200, "Aluminium": 300})
+    assert results and results[0].coverage == 1.0
+
+
+def test_coverage_reflects_tonnage_shortfall():
+    """Matched on breadth but short on tonnage -> coverage below 100%."""
+    st = _station("Short", "Sol", 1.0, 10, True,
+                  {"Steel": 5000, "Aluminium": 8000})
+
+    @contextmanager
+    def fake(req, timeout=0):
+        payload = {"results": [st]}
+        yield io.BytesIO(json.dumps(payload).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations(
+            "Sol", {"Steel": 100000, "Aluminium": 100000}
+        )
+    top = results[0]
+    # Stocks both (breadth) but only 13000 of 200000 t demanded.
+    assert top.match_count == 2
+    assert top.covered_tons == 13000
+    assert top.demand_tons == 200000
+    assert abs(top.coverage - 13000 / 200000) < 1e-9
+
+
+def test_amountless_list_reports_full_coverage():
+    """Amount-less searches have no tonnage, so any match reads as 100%."""
+    st = _station("Listy", "Sol", 1.0, 10, True, {"Steel": 40})
+
+    @contextmanager
+    def fake(req, timeout=0):
+        payload = {"results": [st]}
+        yield io.BytesIO(json.dumps(payload).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations("Sol", ["Steel"])
+    assert results and results[0].coverage == 1.0
+
+
+def test_stations_covering_missing_picks_complementary_stops():
+    """The follow-up list ranks stations by how much of the top's gap they fill."""
+    top = _station("Top", "Sol", 1.0, 10, True, {"Steel": 5000, "Aluminium": 5000})
+    filler = _station("Filler", "Wolf", 2.0, 20, True, {"Copper": 5000, "Gold": 5000})
+    partial = _station("Partial", "Ross", 3.0, 30, True, {"Copper": 5000})
+
+    @contextmanager
+    def fake(req, timeout=0):
+        body = json.loads(req.data.decode())
+        name = body["filters"]["market"][0]["name"]
+        results = []
+        if name in ("Steel", "Aluminium"):
+            results.append(top)
+        if name in ("Copper", "Gold"):
+            results.append(filler)
+        if name == "Copper":
+            results.append(partial)
+        yield io.BytesIO(json.dumps({"results": results}).encode())
+
+    needed = {"Steel": 100, "Aluminium": 100, "Copper": 100, "Gold": 100}
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations("Sol", needed)
+    follow_up = stations.stations_covering_missing(results, needed)
+    # Top stocks Steel+Aluminium; the gap is Copper+Gold. Filler covers both and
+    # outranks Partial (Copper only). Top itself is never a follow-up.
+    assert [s.name for s in follow_up] == ["Filler", "Partial"]
+
