@@ -64,7 +64,7 @@ class SettingsDialog(QDialog):
         form.addRow("Journal folder:", path_wrap)
 
         detected = locator.find_journal_dir(config.journal_dir or None)
-        hint = str(detected) if detected else "not found — set it manually above"
+        hint = str(detected) if detected else "not found - set it manually above"
         detected_label = QLabel(f"Auto-detected: {hint}")
         detected_label.setWordWrap(True)
         detected_label.setStyleSheet("color: #96928a;")

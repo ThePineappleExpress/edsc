@@ -49,6 +49,8 @@ class Config:
     hide_completed: bool = False
     # Station search: include planetary (surface) stations in the results.
     stations_include_planets: bool = True
+    # Station search: include fleet carriers in the results.
+    stations_include_carriers: bool = True
 
     # Automatically ignore the mouse (click-through) while the game window is
     # focused, and become movable again when it isn't. Matchers are substrings

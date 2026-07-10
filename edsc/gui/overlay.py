@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import (
     QEvent,
+    QModelIndex,
     QObject,
     QPoint,
     QRunnable,
@@ -32,7 +33,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QKeySequence, QMouseEvent, QShortcut
+from PySide6.QtGui import QGuiApplication, QKeySequence, QMouseEvent, QShortcut
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -56,10 +57,14 @@ from .. import __version__
 from .. import stations as station_search
 from . import theme
 from .carrier_dialog import CarrierCargoDialog
-from .table_model import CommodityTableModel, StationTableModel
+from .table_model import ST_SYSTEM_COL, CommodityTableModel, StationTableModel
 
 # How often to check which window is focused (ms).
 _FOCUS_POLL_MS = 250
+
+# Stations shown per table (primary + complementary). The search pool itself is
+# larger so the follow-up list has candidates to draw from.
+_STATIONS_SHOWN = 5
 
 
 class _SearchSignals(QObject):
@@ -77,12 +82,29 @@ class _SearchTask(QRunnable):
         reference_system: str,
         needed: dict[str, int],
         include_planetary: bool,
+        include_carriers: bool,
     ):
         super().__init__()
         self.signals = _SearchSignals()
         self._ref = reference_system
         self._needed = needed
         self._include_planetary = include_planetary
+        self._include_carriers = include_carriers
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        """Tell a running search to discard its result instead of emitting."""
+        self._cancelled = True
+
+    def _emit(self, name: str, payload) -> None:
+        if self._cancelled:
+            return
+        try:
+            getattr(self.signals, name).emit(payload)
+        except RuntimeError:
+            # The signals QObject was deleted under us (app quit mid-search);
+            # nobody is listening any more, so just drop the result.
+            pass
 
     def run(self) -> None:
         try:
@@ -90,13 +112,14 @@ class _SearchTask(QRunnable):
                 self._ref,
                 self._needed,
                 include_planetary=self._include_planetary,
+                include_carriers=self._include_carriers,
             )
         except station_search.StationSearchError as exc:
-            self.signals.error.emit(str(exc))
+            self._emit("error", str(exc))
         except Exception as exc:  # pragma: no cover - defensive network guard
-            self.signals.error.emit(str(exc))
+            self._emit("error", str(exc))
         else:
-            self.signals.done.emit(results)
+            self._emit("done", results)
 
 
 
@@ -185,6 +208,7 @@ class OverlayWindow(QWidget):
         self._searching = False
         self._stations_loaded_key: tuple | None = None
         self._search_task = None  # holds the in-flight _SearchTask reference
+        self._search_needs: dict[str, int] = {}  # needs behind the last search
         self.setWindowTitle("EDSC")
         self.setAttribute(Qt.WA_TranslucentBackground)
         self._apply_window_flags()
@@ -237,7 +261,7 @@ class OverlayWindow(QWidget):
         header_row.setContentsMargins(0, 0, 0, 0)
         titles = QVBoxLayout()
         titles.setSpacing(0)
-        self.title_label = QLabel("EDSC — Supply Chain")
+        self.title_label = QLabel("EDSC - Supply Chain")
         self.title_label.setObjectName("title")
         self.subtitle_label = QLabel("")
         self.subtitle_label.setObjectName("subtitle")
@@ -255,7 +279,7 @@ class OverlayWindow(QWidget):
         self.ghost_btn.toggled.connect(self._toggle_auto_click_through)
         self.settings_btn = self._tool("⚙", "Settings")
         self.settings_btn.clicked.connect(self.settings_requested.emit)
-        self.hide_btn = self._tool("—", "Hide to tray")
+        self.hide_btn = self._tool("-", "Hide to tray")
         self.hide_btn.clicked.connect(self.hide)
         for b in (self.pin_btn, self.ghost_btn, self.settings_btn, self.hide_btn):
             header_row.addWidget(b)
@@ -343,7 +367,7 @@ class OverlayWindow(QWidget):
         # completed sites don't linger in the overlay.
         self.complete_btn = self._tool(
             "✔ Complete construction",
-            "All commodities delivered — remove this construction from the overlay",
+            "All commodities delivered - remove this construction from the overlay",
         )
         self.complete_btn.setObjectName("completeBtn")
         self.complete_btn.clicked.connect(self._complete_construction)
@@ -392,6 +416,14 @@ class OverlayWindow(QWidget):
         self.planets_btn.setChecked(self.config.stations_include_planets)
         self.planets_btn.toggled.connect(self._toggle_include_planets)
         bar.addWidget(self.planets_btn)
+        self.carriers_btn = self._tool(
+            "Include carriers",
+            "Include fleet carriers in the results",
+            checkable=True,
+        )
+        self.carriers_btn.setChecked(self.config.stations_include_carriers)
+        self.carriers_btn.toggled.connect(self._toggle_include_carriers)
+        bar.addWidget(self.carriers_btn)
         self.refresh_btn = self._tool("↻ Search", "Search Spansh for nearby stations")
         self.refresh_btn.clicked.connect(self._refresh_stations)
         bar.addWidget(self.refresh_btn)
@@ -406,12 +438,38 @@ class OverlayWindow(QWidget):
         self.stations_table.setFocusPolicy(Qt.NoFocus)
         self.stations_table.verticalHeader().setVisible(False)
         self.stations_table.verticalHeader().setDefaultSectionSize(20)
+        self.stations_table.clicked.connect(self._copy_station_system)
         shdr = self.stations_table.horizontalHeader()
         shdr.setSectionResizeMode(0, QHeaderView.Stretch)
         shdr.setSectionResizeMode(1, QHeaderView.Stretch)
         for c in (2, 3, 4):
             shdr.setSectionResizeMode(c, QHeaderView.ResizeToContents)
         root.addWidget(self.stations_table, 1)
+
+        # Secondary table: stations that stock whatever the best station is
+        # missing, so the top few plus these together cover the whole list.
+        self.stations_more_label = QLabel("")
+        self.stations_more_label.setObjectName("subtitle")
+        self.stations_more_label.setWordWrap(True)
+        self.stations_more_label.setVisible(False)
+        root.addWidget(self.stations_more_label)
+
+        self.stations_model2 = StationTableModel()
+        self.stations_table2 = _FittedTable()
+        self.stations_table2.setModel(self.stations_model2)
+        self.stations_table2.setShowGrid(False)
+        self.stations_table2.setSelectionMode(QTableView.NoSelection)
+        self.stations_table2.setFocusPolicy(Qt.NoFocus)
+        self.stations_table2.verticalHeader().setVisible(False)
+        self.stations_table2.verticalHeader().setDefaultSectionSize(20)
+        self.stations_table2.clicked.connect(self._copy_station_system)
+        shdr2 = self.stations_table2.horizontalHeader()
+        shdr2.setSectionResizeMode(0, QHeaderView.Stretch)
+        shdr2.setSectionResizeMode(1, QHeaderView.Stretch)
+        for c in (2, 3, 4):
+            shdr2.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+        self.stations_table2.setVisible(False)
+        root.addWidget(self.stations_table2, 1)
 
         self.stations_status = QLabel("")
         self.stations_status.setObjectName("status")
@@ -693,18 +751,26 @@ class OverlayWindow(QWidget):
 
         if not state.current_system:
             self.stations_status.setText(
-                "Waiting for your location — jump or dock so EDSC knows where you are."
+                "Waiting for your location - jump or dock so EDSC knows where you are."
             )
             self.stations_model.set_rows([])
+            self._clear_follow_up_stations()
             return
         if not needs:
-            self.stations_status.setText("Nothing outstanding — all commodities covered.")
+            self.stations_status.setText("Nothing outstanding - all commodities covered.")
             self.stations_model.set_rows([])
+            self._clear_follow_up_stations()
             return
 
         key = self._station_search_key(state)
         if not self._searching and key != self._stations_loaded_key:
             self._start_station_search(state)
+
+    def _clear_follow_up_stations(self) -> None:
+        """Empty and hide the complementary 'fill the rest at' table."""
+        self.stations_model2.set_rows([])
+        self.stations_more_label.setVisible(False)
+        self.stations_table2.setVisible(False)
 
     def _station_search_key(self, state: AppState) -> tuple:
         needs = state.outstanding_needs()
@@ -712,6 +778,7 @@ class OverlayWindow(QWidget):
             state.current_system,
             frozenset(needs.keys()),
             self.config.stations_include_planets,
+            self.config.stations_include_carriers,
         )
 
     def _refresh_stations(self) -> None:
@@ -725,6 +792,32 @@ class OverlayWindow(QWidget):
         self.config.stations_include_planets = checked
         self._refresh_stations()
 
+    def _toggle_include_carriers(self, checked: bool) -> None:
+        """'Include carriers' toggle: re-search with the new carrier filter."""
+        self.config.stations_include_carriers = checked
+        self._refresh_stations()
+
+    def _copy_station_system(self, index: QModelIndex) -> None:
+        """Clicking a System cell copies the name, ready to paste in-game."""
+        if index.column() != ST_SYSTEM_COL:
+            return
+        table = self.sender()
+        model = table.model() if table is not None else self.stations_model
+        result = model.row_at(index.row())
+        if result is None:
+            return
+        QGuiApplication.clipboard().setText(result.system)
+        previous = self.stations_status.text()
+        notice = f"Copied '{result.system}' to clipboard"
+        self.stations_status.setText(notice)
+
+        def restore() -> None:
+            # Skip if a search or another copy replaced the notice meanwhile.
+            if self.stations_status.text() == notice:
+                self.stations_status.setText(previous)
+
+        QTimer.singleShot(2500, restore)
+
     def _start_station_search(self, state: AppState) -> None:
         needs = state.outstanding_needs()
         if not state.current_system or not needs:
@@ -732,6 +825,7 @@ class OverlayWindow(QWidget):
         self._searching = True
         self._search_seq += 1
         seq = self._search_seq
+        self._search_needs = dict(needs)
         self.stations_status.setText(f"Searching Spansh near {state.current_system}…")
         self.refresh_btn.setEnabled(False)
         # Pass the amounts too: a station only counts as stocking a commodity
@@ -740,6 +834,7 @@ class OverlayWindow(QWidget):
             state.current_system,
             dict(needs),
             self.config.stations_include_planets,
+            self.config.stations_include_carriers,
         )
         # Keep a Python reference so the task and its signal object aren't
         # garbage-collected before the queued result reaches the GUI thread.
@@ -760,12 +855,30 @@ class OverlayWindow(QWidget):
         self._searching = False
         self._stations_loaded_key = key
         self.refresh_btn.setEnabled(True)
-        self.stations_model.set_rows(results)
+
+        top_rows = results[:_STATIONS_SHOWN]
+        self.stations_model.set_rows(top_rows)
+
+        # Complementary stops for whatever the best station is missing, drawn
+        # from the full result pool but excluding stations already shown above.
+        shown = {(s.name, s.system) for s in top_rows}
+        follow_up = [
+            s
+            for s in station_search.stations_covering_missing(results, self._search_needs)
+            if (s.name, s.system) not in shown
+        ][:_STATIONS_SHOWN]
+        self.stations_model2.set_rows(follow_up)
+        has_follow = bool(follow_up)
+        self.stations_more_label.setText("Fill the rest at:" if has_follow else "")
+        self.stations_more_label.setVisible(has_follow)
+        self.stations_table2.setVisible(has_follow)
+
         if results:
             best = results[0]
             self.stations_status.setText(
                 f"{len(results)} stations · best {best.match_count}/"
-                f"{best.needed_total} at {best.distance_ly:,.1f} ly"
+                f"{best.needed_total} ({best.coverage * 100:.0f}%) "
+                f"at {best.distance_ly:,.1f} ly"
             )
         else:
             self.stations_status.setText(
@@ -778,6 +891,7 @@ class OverlayWindow(QWidget):
             return
         self._searching = False
         self.refresh_btn.setEnabled(True)
+        self._clear_follow_up_stations()
         self.stations_status.setText(f"Search failed: {message}")
 
     def _update_carrier_label(self, state: AppState | None) -> None:
@@ -795,7 +909,7 @@ class OverlayWindow(QWidget):
             # stock sold via the carrier market, which journals don't report
             # as a transfer): the table would show phantom coverage.
             text += (
-                f" — exceeds the carrier's {state.carrier_total:,} t;"
+                f" - exceeds the carrier's {state.carrier_total:,} t;"
                 " 'FC…' to correct"
             )
         elif state.carrier_total and tracked < state.carrier_total:
@@ -910,6 +1024,11 @@ class OverlayWindow(QWidget):
         """Release focus-watching resources (called on shutdown)."""
         self._focus_timer.stop()
         self._detector.close()
+        # A station search may still be blocked on the network; make sure it
+        # won't emit into widgets that are about to be destroyed.
+        if self._search_task is not None:
+            self._search_task.cancel()
+        self._search_pool.clear()  # drop any queued (not yet started) searches
 
     def closeEvent(self, event) -> None:
         # Window-manager close (e.g. Alt+F4) means quit; the header "-" button

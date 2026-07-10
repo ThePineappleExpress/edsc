@@ -115,7 +115,8 @@ class CommodityTableModel(QAbstractTableModel):
 
 
 # No pad column: the search is restricted to large-pad stations already.
-STATION_COLUMNS = ["Station", "System", "Match", "Ly", "Arrival"]
+STATION_COLUMNS = ["Station", "System", "Match/Coverage", "Ly", "Arrival"]
+ST_SYSTEM_COL = 1  # clicking this column copies the system name (see overlay)
 _ST_NUMERIC_COLS = {2, 3, 4}
 _ST_MATCH_COL = 2
 
@@ -161,25 +162,27 @@ class StationTableModel(QAbstractTableModel):
         col = index.column()
 
         if role == Qt.DisplayRole:
-            # ● surface station, ★ orbital — mirrors the tooltip's kind line.
-            marker = "●" if s.is_planetary else "★"
+            # ● surface station, ▻, carriers, ★ orbital - mirrors the tooltip's kind line.
+            marker = "●" if s.is_planetary else "▻" if s.is_carrier else "★"
             return (
                 f"{marker} {s.name}",
                 s.system,
-                f"{s.match_count}/{s.needed_total} ({s.satisfaction * 100:.0f}%)",
+                f"{s.match_count}/{s.needed_total} ({s.coverage * 100:.0f}%)",
                 f"{s.distance_ly:,.1f}",
                 _format_ls(s.arrival_ls),
             )[col]
 
         if role == Qt.ToolTipRole:
             stocked = ", ".join(sorted(s.matched))
-            kind = "Planetary" if s.is_planetary else "Orbital"
+            kind = "Planetary" if s.is_planetary else "Carrier" if s.is_carrier else "Orbital"
             updated = s.market_updated_at or "unknown"
+            hint = "\nClick to copy the system name" if col == ST_SYSTEM_COL else ""
             return (
-                f"{s.name} — {s.system}\n"
+                f"{s.name} - {s.system}\n"
                 f"{kind} · {s.station_type or 'Station'}\n"
                 f"Market data from: {updated}\n"
                 f"Stocks {s.match_count} of {s.needed_total} needed:\n{stocked}"
+                f"{hint}"
             )
 
         if role == Qt.TextAlignmentRole and col in _ST_NUMERIC_COLS:
@@ -195,9 +198,9 @@ class StationTableModel(QAbstractTableModel):
 
     def _foreground(self, s: StationResult, col: int) -> QColor:
         if col == _ST_MATCH_COL:
-            if s.satisfaction >= 0.999:
+            if s.coverage >= 0.999:
                 return theme.DONE
-            if s.satisfaction >= 0.5:
+            if s.coverage >= 0.5:
                 return theme.READY
             return theme.SHORT
         return theme.TEXT

@@ -26,7 +26,7 @@ import sys
 
 
 def _prefer_xcb() -> None:
-    if sys.platform in ("win32", "darwin"):
+    if sys.platform == "win32":
         return
     if os.environ.get("QT_QPA_PLATFORM"):
         return
@@ -39,11 +39,13 @@ _prefer_xcb()
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from .. import core
+from .. import core, hud_colors
 from ..config import Config
 from ..engine import Engine
+from ..journal.locator import find_journal_dir
 from ..paths import asset_path
 from ..platform.hotkeys import GlobalHotkeys
+from . import theme
 from .overlay import OverlayWindow
 from .settings_dialog import SettingsDialog
 
@@ -63,6 +65,7 @@ class Application:
         self.qapp.setWindowIcon(self.icon)
 
         self.config = Config.load()
+        self._apply_hud_colours()
         self.engine = Engine(self.config)
         self.overlay = OverlayWindow(self.config)
 
@@ -120,7 +123,12 @@ class Application:
         if reason == QSystemTrayIcon.Trigger:
             self.toggle_overlay()
 
-    #  actions 
+    #  actions
+
+    def _apply_hud_colours(self) -> None:
+        """Tint the overlay palette to match the player's in-game HUD colours."""
+        journal_dir = find_journal_dir(self.config.journal_dir or None)
+        theme.apply_hud_matrix(hud_colors.load_matrix(journal_dir))
 
     def toggle_overlay(self) -> None:
         if self.overlay.isVisible():
@@ -135,11 +143,14 @@ class Application:
             prev_dir = self.config.journal_dir
             dialog.apply_to(self.config)
             self.config.save()
-            self.overlay.apply_appearance()
-            self.overlay.sync_from_config()
             if self.config.journal_dir != prev_dir:
+                # The graphics config lives in the same game install / Proton
+                # prefix as the journals, so re-resolve the HUD colours too.
+                self._apply_hud_colours()
                 self.engine.stop()
                 self.engine.start()
+            self.overlay.apply_appearance()
+            self.overlay.sync_from_config()
 
     def _on_state_changed(self) -> None:
         self.overlay.refresh(self.engine.state)
