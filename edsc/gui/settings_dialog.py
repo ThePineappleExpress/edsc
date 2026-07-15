@@ -40,6 +40,7 @@ from PySide6.QtCore import Qt
 
 from ..config import Config
 from ..journal import locator
+from . import theme
 
 
 class SettingsDialog(QDialog):
@@ -47,7 +48,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("EDSC Settings")
         self.config = config
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(theme.METRICS.settings_dialog_minimum_width)
 
         form = QFormLayout()
 
@@ -67,12 +68,15 @@ class SettingsDialog(QDialog):
         hint = str(detected) if detected else "not found - set it manually above"
         detected_label = QLabel(f"Auto-detected: {hint}")
         detected_label.setWordWrap(True)
-        detected_label.setStyleSheet("color: #96928a;")
+        theme.set_role(detected_label, theme.MUTED_ROLE)
         form.addRow("", detected_label)
 
         # Opacity.
         self.opacity = QSlider(Qt.Horizontal)
-        self.opacity.setRange(30, 100)
+        self.opacity.setRange(
+            theme.METRICS.opacity_percent_minimum,
+            theme.METRICS.opacity_percent_maximum,
+        )
         self.opacity.setValue(int(config.overlay_opacity * 100))
         self.opacity_label = QLabel(f"{self.opacity.value()}%")
         self.opacity.valueChanged.connect(
@@ -87,7 +91,10 @@ class SettingsDialog(QDialog):
 
         # Font size.
         self.font_size = QSpinBox()
-        self.font_size.setRange(7, 20)
+        self.font_size.setRange(
+            theme.METRICS.font_point_minimum,
+            theme.METRICS.font_point_maximum,
+        )
         self.font_size.setValue(config.font_point_size)
         form.addRow("Font size:", self.font_size)
 

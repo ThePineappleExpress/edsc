@@ -1,4 +1,5 @@
-"""Poll-based tailer for Elite Dangerous journals and the Cargo.json snapshot.
+"""Poll-based tailer for Elite Dangerous journals and the Cargo.json and
+Market.json snapshots.
 
 
     EDSC - Colonization commodities tracker
@@ -31,27 +32,31 @@ from . import locator
 
 EventCallback = Callable[[dict[str, Any]], None]
 CargoCallback = Callable[[list[dict[str, Any]]], None]
+MarketCallback = Callable[[dict[str, Any]], None]
 
 
 class JournalWatcher:
-    """Tails the newest journal file and watches Cargo.json for changes."""
+    """Tails the newest journal file and watches Cargo.json/Market.json."""
 
     def __init__(
         self,
         journal_dir: Path,
         on_event: EventCallback,
         on_cargo: CargoCallback | None = None,
+        on_market: MarketCallback | None = None,
         poll_interval: float = 0.5,
     ) -> None:
         self.journal_dir = Path(journal_dir)
         self.on_event = on_event
         self.on_cargo = on_cargo
+        self.on_market = on_market
         self.poll_interval = poll_interval
 
         self._current_file: Path | None = None
         self._offset = 0
         self._partial = ""  # buffer for a trailing line not yet terminated by \n
         self._cargo_mtime: float | None = None
+        self._market_mtime: float | None = None
         self._running = False
 
     #  history / catch-up 
@@ -100,12 +105,17 @@ class JournalWatcher:
         """Read Cargo.json immediately (used once at startup)."""
         self._read_cargo(force=True)
 
+    def load_market_now(self) -> None:
+        """Read Market.json immediately (used once at startup)."""
+        self._read_market(force=True)
+
     #  live polling
 
     def poll_once(self) -> None:
-        """Do a single pass: pick up new journal lines and cargo changes."""
+        """Do a single pass: new journal lines, cargo and market changes."""
         self._poll_journal()
         self._read_cargo(force=False)
+        self._read_market(force=False)
 
     def run(self, should_stop: Callable[[], bool] = lambda: False) -> None:
         """Blocking loop; exits when ``should_stop()`` returns True."""
@@ -205,3 +215,23 @@ class JournalWatcher:
         if (data.get("Vessel") or "Ship") != "Ship":
             return
         self.on_cargo(data.get("Inventory") or [])
+
+    #  market internals
+
+    def _read_market(self, force: bool) -> None:
+        if self.on_market is None:
+            return
+        market_path = self.journal_dir / "Market.json"
+        try:
+            mtime = market_path.stat().st_mtime
+        except OSError:
+            return
+        if not force and mtime == self._market_mtime:
+            return
+        self._market_mtime = mtime
+        try:
+            data = json.loads(market_path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if isinstance(data, dict):
+            self.on_market(data)

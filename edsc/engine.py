@@ -42,6 +42,7 @@ class _Worker(QObject):
     failed = Signal(str)
     event = Signal(dict)
     cargo = Signal(list)
+    market = Signal(dict)
 
     def __init__(self, journal_dir: Path) -> None:
         super().__init__()
@@ -67,6 +68,7 @@ class _Worker(QObject):
         # state off-thread.
         watcher.on_event = self.event.emit
         watcher.on_cargo = self.cargo.emit
+        watcher.on_market = self.market.emit
         self.ready.emit(state, watcher)
         watcher.run(should_stop=self._stop.is_set)
 
@@ -124,6 +126,7 @@ class Engine(QObject):
         self._worker.failed.connect(self._on_failed)
         self._worker.event.connect(self._on_event)
         self._worker.cargo.connect(self._on_cargo)
+        self._worker.market.connect(self._on_market)
         self._thread.started.connect(self._worker.run)
         self._thread.start()
 
@@ -160,6 +163,13 @@ class Engine(QObject):
         if self.sender() is not self._worker:
             return
         self.state.set_cargo(inventory)
+        self.state_changed.emit()
+
+    @Slot(dict)
+    def _on_market(self, data: dict) -> None:
+        if self.sender() is not self._worker:
+            return
+        self.state.set_market(data)
         self.state_changed.emit()
 
     def stop(self) -> None:

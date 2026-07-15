@@ -85,6 +85,22 @@ def test_cargo_reloaded_on_change(tmp_path):
     assert cargo_updates[-1] == [{"Name": "aluminium", "Count": 3}]
 
 
+def test_market_reloaded_on_change(tmp_path):
+    (tmp_path / "Journal.2026-01-01T000000.01.log").write_text("", encoding="utf-8")
+    market_updates = []
+    w = JournalWatcher(tmp_path, on_event=lambda e: None,
+                       on_market=market_updates.append)
+
+    market = tmp_path / "Market.json"
+    market.write_text(json.dumps({
+        "event": "Market", "MarketID": 5,
+        "Items": [{"Name": "$steel_name;", "Stock": 100}],
+    }), encoding="utf-8")
+    w.load_market_now()
+    assert market_updates[-1]["MarketID"] == 5
+    assert market_updates[-1]["Items"][0]["Stock"] == 100
+
+
 def test_replay_hands_tail_position_to_live_polling(tmp_path):
     """Events landing between replay and the first poll must not be lost, and
     replayed lines must not be re-emitted by the first poll."""

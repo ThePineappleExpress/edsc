@@ -25,6 +25,7 @@ unit-tested headlessly and reconstructed by replaying journal events in order.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -43,6 +44,42 @@ STATIONS_MARKET_ID = -2
 # Watermark that sorts after every real journal timestamp; used to gate *all*
 # replayed CargoTransfer deltas when migrating a pre-watermark cache.
 _FUTURE_WATERMARK = "9999-12-31T23:59:59Z"
+
+
+# Leading localisation token in a journal StationName, e.g.
+# "$EXT_PANEL_ColonisationShip; Nearchus Gateway".
+_STATION_TOKEN_RE = re.compile(r"^\$(?P<token>[^;]*);\s*(?P<rest>.*)$")
+
+
+def _prefix_from_token(token: str) -> str:
+    """Readable site-type prefix from a localisation token body, e.g.
+    ``EXT_PANEL_ColonisationShip`` -> ``Colonisation Ship``. Derived rather
+    than mapped so future site tokens get a sensible prefix too."""
+    token = token.split(":", 1)[0]  # drop ":#index=1"-style suffixes
+    token = token.removeprefix("EXT_PANEL_").replace("_", " ")
+    return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", token).strip()
+
+
+def clean_station_name(name: str, localised: str = "") -> str:
+    """Human-readable station name from a raw journal StationName.
+
+    Docking at a System Colonisation Ship writes the raw name as
+    ``$EXT_PANEL_ColonisationShip; Nearchus Gateway`` — a localisation token
+    with the future station's name appended — and the Docked event carries no
+    StationName_Localised fallback. Render it in the same style the game uses
+    for other construction docks ("Orbital Construction Site: Hartog
+    Horizons"): a site-type prefix derived from the token, then the station
+    name. A bare token falls back to the localised name, then the derived
+    prefix, then the raw value.
+    """
+    m = _STATION_TOKEN_RE.match(name)
+    if m is None:
+        return name
+    rest = m.group("rest").strip()
+    prefix = _prefix_from_token(m.group("token"))
+    if rest:
+        return f"{prefix}: {rest}" if prefix else rest
+    return localised or prefix or name
 
 
 def _int_map(data: Any) -> dict[str, int]:
@@ -180,6 +217,14 @@ class AppState:
         # "nearest stations" search. Coords are (x, y, z) in light years.
         self.current_system: str = ""
         self.current_coords: tuple[float, float, float] | None = None
+        # Where the ship is docked right now (None while in flight), and the
+        # commodities in stock at that station's market, from the Market.json
+        # snapshot. The overlay highlights project lines you can buy on the
+        # spot. The snapshot remembers its own market id: Market.json always
+        # describes the last market *opened*, which may not be where we are.
+        self.docked_market_id: int | None = None
+        self._market_id: int | None = None
+        self._market_stock: set[str] = set()
         # market id -> (station_name, system_name) learned from Docked events,
         # so a depot event can be named even if we docked before it fired.
         self._station_names: dict[int, tuple[str, str]] = {}
@@ -221,6 +266,8 @@ class AppState:
             return self._apply_contribution(event)
         if etype == "Docked":
             return self._apply_docked(event)
+        if etype == "Undocked":
+            return self._set_docked(None)
         if etype in ("FSDJump", "CarrierJump", "Location"):
             return self._apply_location(event)
         if etype == "Cargo":
@@ -310,13 +357,22 @@ class AppState:
         """
         self._loaded_event_time = ""
 
+    def _set_docked(self, market_id: int | None) -> bool:
+        if market_id == self.docked_market_id:
+            return False
+        self.docked_market_id = market_id
+        return True
+
     def _apply_docked(self, event: dict[str, Any]) -> bool:
         mid = event.get("MarketID")
         if mid is None:
             return False
-        name = event.get("StationName", "") or ""
+        name = clean_station_name(
+            event.get("StationName", "") or "",
+            event.get("StationName_Localised", "") or "",
+        )
         system = event.get("StarSystem", "") or ""
-        changed = False
+        changed = self._set_docked(mid)
         if self._station_names.get(mid) != (name, system):
             self._station_names[mid] = (name, system)
             changed = True
@@ -349,6 +405,11 @@ class AppState:
             coords = (float(pos[0]), float(pos[1]), float(pos[2]))
             if coords != self.current_coords:
                 self.current_coords, changed = coords, True
+        # Location/CarrierJump carry a Docked flag (with the MarketID when
+        # docked); FSDJump has none and can only happen in flight. Either way
+        # this re-anchors the docked state after a session restart.
+        docked_mid = event.get("MarketID") if event.get("Docked") else None
+        changed = self._set_docked(docked_mid) or changed
         return changed
 
     def _apply_depot(self, event: dict[str, Any]) -> bool:
@@ -440,7 +501,38 @@ class AppState:
             new_cargo[key] = new_cargo.get(key, 0) + int(item.get("Count", 0) or 0)
         self.cargo = new_cargo
 
-    #  queries 
+    def set_market(self, data: dict[str, Any]) -> None:
+        """Replace the station-market snapshot from a Market.json dict.
+
+        Keeps the market id and the commodities actually in stock there
+        (Stock > 0); items a station merely buys don't count as available.
+        """
+        stock: set[str] = set()
+        for item in data.get("Items") or []:
+            key = register_display_name(item.get("Name"), item.get("Name_Localised"))
+            try:
+                in_stock = int(item.get("Stock", 0) or 0) > 0
+            except (TypeError, ValueError):
+                in_stock = False
+            if key and in_stock:
+                stock.add(key)
+        mid = data.get("MarketID")
+        self._market_id = mid if isinstance(mid, int) else None
+        self._market_stock = stock
+
+    #  queries
+
+    def docked_station_stock(self) -> set[str]:
+        """Commodity keys in stock at the station we're docked at right now.
+
+        Empty while in flight, and also while the Market.json snapshot still
+        describes some previously visited market (it only updates when the
+        commodities market is opened).
+        """
+        if self.docked_market_id is None or self._market_id != self.docked_market_id:
+            return set()
+        return self._market_stock
+
 
     def project_list(self) -> list[Project]:
         """Projects ordered: active first, then completed/failed, newest first."""
@@ -502,6 +594,7 @@ class AppState:
     def to_dict(self) -> dict[str, Any]:
         return {
             "current_market_id": self.current_market_id,
+            "docked_market_id": self.docked_market_id,
             "current_system": self.current_system,
             "current_coords": list(self.current_coords)
             if self.current_coords is not None
@@ -553,6 +646,8 @@ class AppState:
         if not isinstance(data, dict):
             return state
         state.current_market_id = data.get("current_market_id")
+        docked = data.get("docked_market_id")
+        state.docked_market_id = docked if isinstance(docked, int) else None
         state.current_system = data.get("current_system", "") or ""
         coords = data.get("current_coords")
         if isinstance(coords, (list, tuple)) and len(coords) == 3:
@@ -599,7 +694,9 @@ class AppState:
             try:
                 proj = Project(
                     market_id=int(pd["market_id"]),
-                    station_name=pd.get("station_name", ""),
+                    # Cleaned again on load so token names persisted by older
+                    # versions heal without needing a re-dock.
+                    station_name=clean_station_name(pd.get("station_name", "") or ""),
                     system_name=pd.get("system_name", ""),
                     progress=float(pd.get("progress", 0.0) or 0.0),
                     complete=bool(pd.get("complete", False)),

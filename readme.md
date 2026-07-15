@@ -57,7 +57,7 @@ For every construction site you've docked at, EDSC shows each commodity with:
 | **Hold**    | How many you're carrying right now (from `Cargo.json`) |
 | **Carrier** | How many are staged on your fleet carrier (tracked - see below) |
 | **Done**   | How many have already been delivered to the depot |
-| **Short**   | How many you still need to acquire (`Need − Deliv − Hold`) |
+| **Short**   | How many you still need to deliver |
 
 Fully-delivered commodities are dimmed and sink to the bottom; anything you're
 already carrying enough of to complete is highlighted.
@@ -85,9 +85,17 @@ the community [Spansh](https://spansh.co.uk) station search for the nearest
 **large-pad** stations selling the commodities you're still short of (aggregated
 across all your active constructions, minus what's already in your hold and on
 your carrier), ranked by how many list items each station covers, then by
-distance. The top five matches are shown; when the best station doesn't stock
-everything, a second **"Fill the rest at"** table lists complementary stops that
-cover what the best one is missing. Hover a row to see exactly which needed
+distance. One search pass fetches and caches up to **10 orbital stations, 10
+planetary stations, and 10 fleet carriers**. Each visible table is capped at
+**10 mixed results**. Orbital stations are the baseline; **Planets** and
+**Carriers** include those categories alongside orbitals, reserving a visible
+entry for every enabled category that has a match rather than switching to an
+exclusive category view. When the best station doesn't stock everything, a
+second **"Fill the rest at"** table shows all cached alternatives that contribute
+to the gap, so a matching planetary station does not hide matching carriers.
+Both tables' category controls filter instantly and never make another network
+request. The second table's controls remain available when no cached
+complementary station is found. Hover a row to see exactly which needed
 commodities a station stocks and how fresh its market data is.
 
 - The **Match/Coverage** column shows both breadth and depth: `3/8 (74%)` means
@@ -95,15 +103,24 @@ commodities a station stocks and how fresh its market data is.
   74 % of the outstanding tonnage of those 3.
 - **Click a System cell** to copy the system name to the clipboard, ready to
   paste into the in-game galaxy map.
-- Station markers: ★ orbital, ● surface, ▻ fleet carrier.
+- The tooltip also shows who runs the place: stations/ports get their
+  controlling minor faction under the name, and carriers show their name beside
+  the callsign (when known - carrier names are community-sourced and often
+  missing).
+- Station icons distinguish orbital, surface, and fleet-carrier markets.
 - Your current system is the search origin, tracked from jump/location events -
   you don't need to dock first.
 - A station only counts as stocking a commodity when its supply covers your
   remaining shortfall (capped at a pragmatic 100 t floor for large shortfalls),
   so a market listing 2 t against a 5,000 t need doesn't light up.
-- **Include planets** toggles surface stations, **Include carriers** toggles
-  fleet carriers; **↻ Search** forces a refresh. The search also re-runs
-  automatically when your system or the set of needed commodities changes.
+- **Planets** and **Carriers** include those categories with orbital stations
+  using only the fetched data. **↻ Search** is the explicit full refresh; jumps and
+  demand changes keep the existing cache and are flagged until you refresh.
+- **Recent** is a pre-search filter for market data updated in the last 24 hours.
+  Changing it re-runs the full search, just like **↻ Search**.
+- Every needed commodity is queried across orbital, planetary, and carrier
+  markets. The supplementary plan checks their combined coverage and reports
+  any commodity that is still absent from the fetched data.
 - Market data is community-sourced (EDDN) and can be stale - check the tooltip's
   *"Market data from"* line before a long haul.
 
@@ -196,9 +213,9 @@ pip install -e .
 edsc                                # or: python -m edsc
 ```
 
-The overlay appears as a frameless, translucent, always-on-top panel. Drag it by
-its header. It also lives in the system tray - click the tray icon to show/hide,
-or right-click for Settings / Quit.
+The overlay appears as a frameless, translucent, always-on-top on demand panel.
+Drag it by its header. It also lives in the system tray - click the tray icon
+to show/hide, or right-click for Settings / Quit.
 
 The overlay's **height auto-fits the number of commodities** in the list (long
 lists scroll once they'd run off-screen); drag the corner grip to set the width.

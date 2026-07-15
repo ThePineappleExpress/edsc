@@ -51,6 +51,8 @@ class Config:
     stations_include_planets: bool = True
     # Station search: include fleet carriers in the results.
     stations_include_carriers: bool = True
+    # Station search: ask Spansh for markets updated within the last 24 hours.
+    stations_recent_only: bool = False
 
     # Automatically ignore the mouse (click-through) while the game window is
     # focused, and become movable again when it isn't. Matchers are substrings

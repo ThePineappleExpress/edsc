@@ -35,13 +35,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..model import CommodityRow
+from . import theme
 
 
 class CarrierCargoDialog(QDialog):
     def __init__(self, rows: list[CommodityRow], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Set fleet-carrier cargo")
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(theme.METRICS.carrier_dialog_minimum_width)
         self._spins: dict[str, QSpinBox] = {}
 
         layout = QVBoxLayout(self)

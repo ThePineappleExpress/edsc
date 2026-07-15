@@ -33,7 +33,13 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QGuiApplication, QKeySequence, QMouseEvent, QShortcut
+from PySide6.QtGui import (
+    QFontMetrics,
+    QGuiApplication,
+    QKeySequence,
+    QMouseEvent,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -57,14 +63,24 @@ from .. import __version__
 from .. import stations as station_search
 from . import theme
 from .carrier_dialog import CarrierCargoDialog
-from .table_model import ST_SYSTEM_COL, CommodityTableModel, StationTableModel
+from .table_model import (
+    STATION_COLUMNS,
+    ST_ARRIVAL_COL,
+    ST_COVER_COL,
+    ST_DIST_COL,
+    ST_MATCH_COL,
+    ST_SYSTEM_COL,
+    CommodityTableModel,
+    StationTableModel,
+)
 
 # How often to check which window is focused (ms).
 _FOCUS_POLL_MS = 250
 
-# Stations shown per table (primary + complementary). The search pool itself is
-# larger so the follow-up list has candidates to draw from.
-_STATIONS_SHOWN = 5
+# Each visible station table is capped to ten mixed-category entries. The
+# underlying cache still retains ten orbitals, ten planetary stations, and ten
+# carriers for instant re-filtering and completeness checks.
+_RESULTS_SHOWN = 10
 
 
 class _SearchSignals(QObject):
@@ -75,32 +91,30 @@ class _SearchSignals(QObject):
 
 
 class _SearchTask(QRunnable):
-    """Runs one Spansh station search off the GUI thread."""
+    """Fetch one complete, reusable Spansh result pool off the GUI thread."""
 
     def __init__(
         self,
         reference_system: str,
         needed: dict[str, int],
-        include_planetary: bool,
-        include_carriers: bool,
+        recent_only: bool,
     ):
         super().__init__()
         self.signals = _SearchSignals()
         self._ref = reference_system
         self._needed = needed
-        self._include_planetary = include_planetary
-        self._include_carriers = include_carriers
+        self._recent_only = recent_only
         self._cancelled = False
 
     def cancel(self) -> None:
         """Tell a running search to discard its result instead of emitting."""
         self._cancelled = True
 
-    def _emit(self, name: str, payload) -> None:
+    def _emit(self, name: str, *payload) -> None:
         if self._cancelled:
             return
         try:
-            getattr(self.signals, name).emit(payload)
+            getattr(self.signals, name).emit(*payload)
         except RuntimeError:
             # The signals QObject was deleted under us (app quit mid-search);
             # nobody is listening any more, so just drop the result.
@@ -111,8 +125,7 @@ class _SearchTask(QRunnable):
             results = station_search.search_stations(
                 self._ref,
                 self._needed,
-                include_planetary=self._include_planetary,
-                include_carriers=self._include_carriers,
+                recent_only=self._recent_only,
             )
         except station_search.StationSearchError as exc:
             self._emit("error", str(exc))
@@ -157,11 +170,8 @@ class _FittedTable(QTableView):
 
     def __init__(self) -> None:
         super().__init__()
-        self.cap = 10_000
+        self.cap = theme.METRICS.table_height_cap
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        # Subtle zebra striping (shade set in the theme stylesheet) so busy
-        # lists stay readable.
-        self.setAlternatingRowColors(True)
 
     def _content_height(self) -> int:
         model = self.model()
@@ -180,6 +190,86 @@ class _FittedTable(QTableView):
         row_h = self.verticalHeader().defaultSectionSize()
         head_h = self.horizontalHeader().sizeHint().height()
         return QSize(0, head_h + row_h)
+
+
+class _StationTable(_FittedTable):
+    """Station results table that lays out its own column widths.
+
+    The numeric columns are constant (set via ``fixed_widths``); the station
+    and system names share whatever is left, station first: the system column
+    only grows past its small elided budget with space the station name
+    doesn't need, up to showing full system names, and any surplus beyond
+    that goes back to the station column.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fixed_widths: dict[int, int] = {}  # numeric col -> constant px
+        # Elided floors; real values set from font metrics. System yields
+        # space before the station name, so it collapses to the smaller floor.
+        self.system_min = theme.METRICS.station_system_width_fallback
+        self.station_min = theme.METRICS.station_name_width_fallback
+
+    def relayout_columns(self) -> None:
+        if not self.fixed_widths or self.model() is None:
+            return
+        hdr = self.horizontalHeader()
+        for col, width in self.fixed_widths.items():
+            hdr.resizeSection(col, width)
+        avail = self.viewport().width() - sum(self.fixed_widths.values())
+        # sizeHintForColumn under-reserves the delegate's text margins by a
+        # few pixels, which would elide the last character even with room to
+        # spare - pad the "shows the full name" targets past that.
+        slack = theme.METRICS.station_column_slack
+        station_full = max(0, self.sizeHintForColumn(0)) + slack
+        system_full = max(0, self.sizeHintForColumn(ST_SYSTEM_COL)) + slack
+        # The station name is the priority column: the system column gives up
+        # its width first. Keep the station at its full width and shrink system
+        # toward its floor; only once system sits at that floor does the
+        # station name itself start eliding, down to its own floor.
+        system_w = max(self.system_min, min(system_full, avail - station_full))
+        station_w = max(self.station_min, avail - system_w)
+        # Too narrow even for both floors: clip system further so the station
+        # keeps its floor (the trailing numeric columns clip, as elsewhere).
+        if station_w + system_w > avail:
+            system_w = max(0, avail - station_w)
+        hdr.resizeSection(ST_SYSTEM_COL, system_w)
+        hdr.resizeSection(0, station_w)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.relayout_columns()
+
+
+class _ElideLabel(QLabel):
+    """A label that elides with … instead of dictating a minimum width.
+
+    A plain QLabel refuses to shrink below its full text, so one long status
+    line would set the whole window's minimum width. This one lets the layout
+    squeeze it and shows however much fits (the full text moves to a tooltip).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._full_text = ""
+
+    def setText(self, text: str) -> None:
+        self._full_text = text
+        self.setToolTip(text)
+        self._relide()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._relide()
+
+    def _relide(self) -> None:
+        metrics = self.fontMetrics()
+        super().setText(
+            metrics.elidedText(self._full_text, Qt.ElideRight, max(0, self.width()))
+        )
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
 
 
 class OverlayWindow(QWidget):
@@ -206,17 +296,24 @@ class OverlayWindow(QWidget):
         self._search_pool.setMaxThreadCount(1)  # one search at a time
         self._search_seq = 0
         self._searching = False
-        self._stations_loaded_key: tuple | None = None
+        # Spansh is queried automatically only once per session (the first time
+        # the tab is viewed with a known location and outstanding needs); after
+        # that only ↻ Search or the Recent pre-search toggle re-runs it. Every
+        # station-type control filters this cached pool locally.
+        self._stations_searched = False
         self._search_task = None  # holds the in-flight _SearchTask reference
-        self._search_needs: dict[str, int] = {}  # needs behind the last search
+        self._search_ref = ""  # reference system behind the last search
+        self._search_needs: dict[str, int] = {}
+        self._search_recent_only = False
+        self._station_results: list[station_search.StationResult] = []
         self.setWindowTitle("EDSC")
         self.setAttribute(Qt.WA_TranslucentBackground)
         self._apply_window_flags()
 
         self.panel = QFrame(self)
-        self.panel.setObjectName("panel")
+        theme.set_role(self.panel, theme.PANEL_ROLE)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(6, 6, 6, 6)
+        outer.setContentsMargins(*theme.METRICS.overlay_outer_margins)
         outer.addWidget(self.panel)
 
         self._build_ui()
@@ -252,34 +349,39 @@ class OverlayWindow(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self.panel)
-        root.setContentsMargins(12, 10, 12, 10)
-        root.setSpacing(6)
+        root.setContentsMargins(*theme.METRICS.panel_margins)
+        root.setSpacing(theme.METRICS.content_spacing)
 
         # Header: title + window buttons, draggable.
         self.header = _DragBar(self)
         header_row = QHBoxLayout(self.header)
-        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setContentsMargins(*theme.METRICS.page_margins)
         titles = QVBoxLayout()
-        titles.setSpacing(0)
-        self.title_label = QLabel("EDSC - Supply Chain")
-        self.title_label.setObjectName("title")
-        self.subtitle_label = QLabel("")
-        self.subtitle_label.setObjectName("subtitle")
+        titles.setSpacing(theme.METRICS.header_spacing)
+        # Elided: a long construction-site name must not dictate how narrow
+        # the window can go (the minimum must not depend on tab content).
+        self.title_label = _ElideLabel()
+        theme.set_role(self.title_label, theme.TITLE_ROLE)
+        self.title_label.setText("EDSC - Supply Chain")
+        self.subtitle_label = _ElideLabel()
+        theme.set_role(self.subtitle_label, theme.SUBTITLE_ROLE)
         titles.addWidget(self.title_label)
         titles.addWidget(self.subtitle_label)
         header_row.addLayout(titles, 1)
 
-        self.pin_btn = self._tool("▲", "Keep above other windows", checkable=True)
+        self.pin_btn = self._window_control(
+            "▲", "Keep above other windows", checkable=True
+        )
         self.pin_btn.setChecked(self.config.always_on_top)
         self.pin_btn.toggled.connect(self._toggle_pin)
-        self.ghost_btn = self._tool(
+        self.ghost_btn = self._window_control(
             "▨", "Auto click-through while the game is focused", checkable=True
         )
         self.ghost_btn.setChecked(self.config.auto_click_through)
         self.ghost_btn.toggled.connect(self._toggle_auto_click_through)
-        self.settings_btn = self._tool("⚙", "Settings")
+        self.settings_btn = self._window_control("⚙", "Settings")
         self.settings_btn.clicked.connect(self.settings_requested.emit)
-        self.hide_btn = self._tool("-", "Hide to tray")
+        self.hide_btn = self._window_control("-", "Hide to tray")
         self.hide_btn.clicked.connect(self.hide)
         for b in (self.pin_btn, self.ghost_btn, self.settings_btn, self.hide_btn):
             header_row.addWidget(b)
@@ -313,13 +415,13 @@ class OverlayWindow(QWidget):
 
         # Shared bottom: the status line, then a credit footer with the grip.
         self.status_label = QLabel("Starting…")
-        self.status_label.setObjectName("status")
+        theme.set_role(self.status_label, theme.STATUS_ROLE)
         self.status_label.setWordWrap(True)
         root.addWidget(self.status_label)
 
         credit_row = QHBoxLayout()
         self.credit_label = QLabel(f"EDSC {__version__} · by CMDR FEEDMEWEED 2026")
-        self.credit_label.setObjectName("credit")
+        theme.set_role(self.credit_label, theme.CREDIT_ROLE)
         credit_row.addWidget(self.credit_label, 1)
         # Grabbing the grip means the user wants this size: stop auto-fitting
         # for the session (the event filter clears the flag on press).
@@ -331,8 +433,8 @@ class OverlayWindow(QWidget):
     def _build_commodity_page(self) -> QWidget:
         page = QWidget()
         root = QVBoxLayout(page)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(6)
+        root.setContentsMargins(*theme.METRICS.page_margins)
+        root.setSpacing(theme.METRICS.content_spacing)
 
         # Progress line.
         prog_row = QHBoxLayout()
@@ -349,11 +451,10 @@ class OverlayWindow(QWidget):
         self.model.set_hide_completed(self.config.hide_completed)
         self.table = _FittedTable()
         self.table.setModel(self.model)
-        self.table.setShowGrid(False)
+        theme.configure_table(self.table)
         self.table.setSelectionMode(QTableView.NoSelection)
         self.table.setFocusPolicy(Qt.NoFocus)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(20)
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.Stretch)
         for c in (1, 2, 3, 4, 5):
@@ -369,15 +470,17 @@ class OverlayWindow(QWidget):
             "✔ Complete construction",
             "All commodities delivered - remove this construction from the overlay",
         )
-        self.complete_btn.setObjectName("completeBtn")
+        theme.set_role(self.complete_btn, theme.COMPLETE_BUTTON_ROLE)
         self.complete_btn.clicked.connect(self._complete_construction)
         self.complete_btn.setVisible(False)
         root.addWidget(self.complete_btn)
 
-        # Footer: totals + toggles.
+        # Footer: totals + toggles. The totals elide like the header labels:
+        # every text that varies with project data must stay out of the
+        # minimum-width calculation.
         footer = QHBoxLayout()
-        self.totals_label = QLabel("")
-        self.totals_label.setObjectName("subtitle")
+        self.totals_label = _ElideLabel()
+        theme.set_role(self.totals_label, theme.SUBTITLE_ROLE)
         footer.addWidget(self.totals_label, 1)
         self.carrier_btn = self._tool("FC…", "Set fleet-carrier cargo amounts")
         self.carrier_btn.clicked.connect(self._edit_carrier_cargo)
@@ -391,7 +494,7 @@ class OverlayWindow(QWidget):
 
         # Fleet-carrier tracking summary (hidden until a carrier is known).
         self.carrier_label = QLabel("")
-        self.carrier_label.setObjectName("status")
+        theme.set_role(self.carrier_label, theme.STATUS_ROLE)
         self.carrier_label.setWordWrap(True)
         root.addWidget(self.carrier_label)
         return page
@@ -399,31 +502,40 @@ class OverlayWindow(QWidget):
     def _build_stations_page(self) -> QWidget:
         page = QWidget()
         root = QVBoxLayout(page)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(6)
+        root.setContentsMargins(*theme.METRICS.page_margins)
+        root.setSpacing(theme.METRICS.content_spacing)
 
         # Controls: reference system + refresh. The search is always restricted
-        # to large-pad stations, so there's no pad filter to toggle.
+        # to large-pad stations, so there's no pad filter to toggle. The label
+        # elides so its (long) text never widens the window's minimum.
         bar = QHBoxLayout()
-        self.stations_ref_label = QLabel("")
-        self.stations_ref_label.setObjectName("subtitle")
+        self.stations_ref_label = _ElideLabel()
+        theme.set_role(self.stations_ref_label, theme.SUBTITLE_ROLE)
         bar.addWidget(self.stations_ref_label, 1)
         self.planets_btn = self._tool(
-            "Include planets",
-            "Include planetary outposts in the results",
+            "Planets",
+            "Add planetary outposts to the orbital-station results",
             checkable=True,
         )
         self.planets_btn.setChecked(self.config.stations_include_planets)
         self.planets_btn.toggled.connect(self._toggle_include_planets)
         bar.addWidget(self.planets_btn)
         self.carriers_btn = self._tool(
-            "Include carriers",
-            "Include fleet carriers in the results",
+            "Carriers",
+            "Add fleet carriers to the orbital-station results",
             checkable=True,
         )
         self.carriers_btn.setChecked(self.config.stations_include_carriers)
         self.carriers_btn.toggled.connect(self._toggle_include_carriers)
         bar.addWidget(self.carriers_btn)
+        self.recent_btn = self._tool(
+            "Recent",
+            "Search only markets updated in the last 24 hours (runs a new search)",
+            checkable=True,
+        )
+        self.recent_btn.setChecked(self.config.stations_recent_only)
+        self.recent_btn.toggled.connect(self._toggle_recent)
+        bar.addWidget(self.recent_btn)
         self.refresh_btn = self._tool("↻ Search", "Search Spansh for nearby stations")
         self.refresh_btn.clicked.connect(self._refresh_stations)
         bar.addWidget(self.refresh_btn)
@@ -431,52 +543,121 @@ class OverlayWindow(QWidget):
 
         # Station results table.
         self.stations_model = StationTableModel()
-        self.stations_table = _FittedTable()
-        self.stations_table.setModel(self.stations_model)
-        self.stations_table.setShowGrid(False)
-        self.stations_table.setSelectionMode(QTableView.NoSelection)
-        self.stations_table.setFocusPolicy(Qt.NoFocus)
-        self.stations_table.verticalHeader().setVisible(False)
-        self.stations_table.verticalHeader().setDefaultSectionSize(20)
-        self.stations_table.clicked.connect(self._copy_station_system)
-        shdr = self.stations_table.horizontalHeader()
-        shdr.setSectionResizeMode(0, QHeaderView.Stretch)
-        shdr.setSectionResizeMode(1, QHeaderView.Stretch)
-        for c in (2, 3, 4):
-            shdr.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+        self.stations_table = _StationTable()
+        self._init_station_table(self.stations_table, self.stations_model)
         root.addWidget(self.stations_table, 1)
 
-        # Secondary table: stations that stock whatever the best station is
-        # missing, so the top few plus these together cover the whole list.
+        # Secondary table: stations covering the residual demand the best
+        # station can't fully supply. Its independent filters are applied to the
+        # same cached result pool, so broadening it is instant and performs no I/O.
+        self.stations_more_bar = QWidget()
+        more_bar = QHBoxLayout(self.stations_more_bar)
+        more_bar.setContentsMargins(*theme.METRICS.page_margins)
         self.stations_more_label = QLabel("")
-        self.stations_more_label.setObjectName("subtitle")
+        theme.set_role(self.stations_more_label, theme.SUBTITLE_ROLE)
         self.stations_more_label.setWordWrap(True)
-        self.stations_more_label.setVisible(False)
-        root.addWidget(self.stations_more_label)
+        more_bar.addWidget(self.stations_more_label, 1)
+        self.planets_btn2 = self._tool(
+            "Planets",
+            "Add planetary outposts to the orbital remaining-demand results",
+            checkable=True,
+        )
+        self.planets_btn2.setChecked(self.config.stations_include_planets)
+        self.planets_btn2.toggled.connect(self._toggle_follow_up_planets)
+        more_bar.addWidget(self.planets_btn2)
+        self.carriers_btn2 = self._tool(
+            "Carriers",
+            "Add fleet carriers to the orbital remaining-demand results",
+            checkable=True,
+        )
+        self.carriers_btn2.setChecked(self.config.stations_include_carriers)
+        self.carriers_btn2.toggled.connect(self._toggle_follow_up_carriers)
+        more_bar.addWidget(self.carriers_btn2)
+        self.stations_more_bar.setVisible(False)
+        root.addWidget(self.stations_more_bar)
 
         self.stations_model2 = StationTableModel()
-        self.stations_table2 = _FittedTable()
-        self.stations_table2.setModel(self.stations_model2)
-        self.stations_table2.setShowGrid(False)
-        self.stations_table2.setSelectionMode(QTableView.NoSelection)
-        self.stations_table2.setFocusPolicy(Qt.NoFocus)
-        self.stations_table2.verticalHeader().setVisible(False)
-        self.stations_table2.verticalHeader().setDefaultSectionSize(20)
-        self.stations_table2.clicked.connect(self._copy_station_system)
-        shdr2 = self.stations_table2.horizontalHeader()
-        shdr2.setSectionResizeMode(0, QHeaderView.Stretch)
-        shdr2.setSectionResizeMode(1, QHeaderView.Stretch)
-        for c in (2, 3, 4):
-            shdr2.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+        self.stations_table2 = _StationTable()
+        self._init_station_table(self.stations_table2, self.stations_model2)
         self.stations_table2.setVisible(False)
         root.addWidget(self.stations_table2, 1)
 
         self.stations_status = QLabel("")
-        self.stations_status.setObjectName("status")
+        theme.set_role(self.stations_status, theme.STATUS_ROLE)
         self.stations_status.setWordWrap(True)
         root.addWidget(self.stations_status)
         return page
 
+    def _init_station_table(
+        self, table: _StationTable, model: StationTableModel
+    ) -> None:
+        table.setModel(model)
+        theme.configure_table(table, elide_text=True)
+        table.setSelectionMode(QTableView.NoSelection)
+        table.setFocusPolicy(Qt.NoFocus)
+        table.verticalHeader().setVisible(False)
+        table.clicked.connect(self._copy_station_system)
+        # All sections Fixed: relayout_columns owns every width (constant
+        # numerics, then station name first, system name with the leftovers).
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        model.modelReset.connect(table.relayout_columns)
+
+    def _apply_station_column_widths(self) -> None:
+        """Feed the station tables their column budgets.
+
+        Numeric columns get constant widths sized from font metrics (so the
+        font-size setting scales them) to the widest realistic value - numbers
+        must never elide. The system column's floor is a small elided budget;
+        past that, relayout_columns grows it only with space the station name
+        doesn't need.
+        """
+        pt = self.config.font_point_size
+        prop = theme.resized_font(self.font(), pt)
+        mono = theme.monospace_font(pt)
+        head = theme.resized_font(self.font(), pt - 1)
+        head_fm = QFontMetrics(head)
+        pad = theme.METRICS.table_cell_padding
+
+        def col_width(col: int, sample: str, fm: QFontMetrics) -> int:
+            header_w = (
+                head_fm.horizontalAdvance(STATION_COLUMNS[col])
+                + theme.METRICS.table_header_extra
+            )
+            return max(fm.horizontalAdvance(sample) + pad, header_w)
+
+        prop_fm = QFontMetrics(prop)
+        mono_fm = QFontMetrics(mono)
+        widths = {
+            ST_MATCH_COL: col_width(ST_MATCH_COL, "88/88", mono_fm),
+            ST_COVER_COL: col_width(ST_COVER_COL, "100%", mono_fm),
+            ST_DIST_COL: col_width(ST_DIST_COL, "9,999.9", mono_fm),
+            ST_ARRIVAL_COL: col_width(ST_ARRIVAL_COL, "9,999.9k", mono_fm),
+        }
+        # Floors the shared name columns collapse to: the header word plus a
+        # breath of space on each side, so the label itself never clips.
+        # System is the first to yield down to this floor; the station name
+        # follows the same rule once system is there.
+        system_min = head_fm.horizontalAdvance("System") + 2 * pad
+        station_min = head_fm.horizontalAdvance("Station") + 2 * pad
+        for table in (self.stations_table, self.stations_table2):
+            table.fixed_widths = widths
+            table.system_min = system_min
+            table.station_min = station_min
+            table.relayout_columns()
+
+    def _sync_min_width(self) -> None:
+        """Pin both pages to one minimum width so every tab bottoms out alike.
+
+        Hidden widgets don't count towards a layout's minimum, so the two
+        pages would otherwise each impose their own floor and the window's
+        minimum width would change with the selected tab.
+        """
+        floor = max(
+            self.commodity_page.layout().totalMinimumSize().width(),
+            self.stations_page.layout().totalMinimumSize().width(),
+        )
+        self.commodity_page.setMinimumWidth(floor)
+        self.stations_page.setMinimumWidth(floor)
 
     def _tool(self, text: str, tip: str, checkable: bool = False) -> QToolButton:
         b = QToolButton()
@@ -485,6 +666,14 @@ class OverlayWindow(QWidget):
         b.setCheckable(checkable)
         b.setCursor(Qt.PointingHandCursor)
         return b
+
+    def _window_control(
+        self, text: str, tip: str, checkable: bool = False
+    ) -> QToolButton:
+        """Build one of the four compact controls in the title row."""
+        button = self._tool(text, tip, checkable)
+        theme.configure_window_control(button)
+        return button
 
     #  appearance / flags 
 
@@ -505,6 +694,8 @@ class OverlayWindow(QWidget):
                 font_pt=self.config.font_point_size,
             )
         )
+        self._apply_station_column_widths()
+        self._sync_min_width()
 
     def sync_from_config(self) -> None:
         """Re-apply settings that changed via the Settings dialog."""
@@ -544,6 +735,9 @@ class OverlayWindow(QWidget):
             self._project_ids = ids
 
         self._render_current(state)
+        # Re-pin after rendering: widgets appearing/disappearing (e.g. the
+        # complete-construction button) shift the pages' natural minimums.
+        self._sync_min_width()
         self._fit_height()
 
     #  tabs -
@@ -686,6 +880,7 @@ class OverlayWindow(QWidget):
         self.progress.setValue(int(round(frac * 100)))
         self.percent_label.setText(f"{frac * 100:.0f}%")
 
+        self.model.set_station_stock(state.docked_station_stock())
         self._current_rows = proj.rows(state.cargo, state.carrier_cargo)
         self.model.set_rows(self._current_rows)
 
@@ -736,17 +931,21 @@ class OverlayWindow(QWidget):
         self.commodity_page.setVisible(not stations)
 
     def _render_stations(self, state: AppState) -> None:
-        """Switch to the station-search page and (re)run the search as needed."""
+        """Switch to the station-search page; the first view triggers the search."""
         self._show_page(stations=True)
         self.title_label.setText("Nearest stations")
         system = state.current_system or "unknown"
         self.subtitle_label.setText(f"Buying near {system}")
         needs = state.outstanding_needs()
         ref_text = f"Near {system} · {len(needs)} commodities needed"
-        if len(needs) > station_search.MAX_COMMODITIES:
-            ref_text += (
-                f" · querying top {station_search.MAX_COMMODITIES} by shortfall"
-            )
+        if self.recent_btn.isChecked():
+            ref_text += " · markets ≤24h old"
+        # Results are anchored to where the search ran; after a jump they're
+        # still shown, just flagged so the user knows ↻ re-anchors them.
+        if self._search_ref and self._search_ref != state.current_system:
+            ref_text += f" · results from {self._search_ref} (↻ to update)"
+        elif self._search_needs and self._search_needs != needs:
+            ref_text += " · demand changed (↻ to update)"
         self.stations_ref_label.setText(ref_text)
 
         if not state.current_system:
@@ -762,40 +961,57 @@ class OverlayWindow(QWidget):
             self._clear_follow_up_stations()
             return
 
-        key = self._station_search_key(state)
-        if not self._searching and key != self._stations_loaded_key:
+        # Auto-search only once per session; afterwards Spansh is hit again
+        # solely by ↻ Search or the Recent pre-search toggle.
+        if not self._searching and not self._stations_searched:
             self._start_station_search(state)
+        elif not self._searching and self._station_results:
+            self._apply_cached_results()
 
     def _clear_follow_up_stations(self) -> None:
         """Empty and hide the complementary 'fill the rest at' table."""
         self.stations_model2.set_rows([])
-        self.stations_more_label.setVisible(False)
+        self.stations_more_bar.setVisible(False)
         self.stations_table2.setVisible(False)
-
-    def _station_search_key(self, state: AppState) -> tuple:
-        needs = state.outstanding_needs()
-        return (
-            state.current_system,
-            frozenset(needs.keys()),
-            self.config.stations_include_planets,
-            self.config.stations_include_carriers,
-        )
 
     def _refresh_stations(self) -> None:
         """Manual refresh button: force a fresh search."""
         if self._state is not None:
-            self._stations_loaded_key = None
             self._start_station_search(self._state)
 
     def _toggle_include_planets(self, checked: bool) -> None:
-        """'Include planets' toggle: re-search with the new surface filter."""
+        """Apply the primary surface filter to the cached result pool."""
         self.config.stations_include_planets = checked
-        self._refresh_stations()
+        self._apply_cached_results()
 
     def _toggle_include_carriers(self, checked: bool) -> None:
-        """'Include carriers' toggle: re-search with the new carrier filter."""
+        """Apply the primary carrier filter to the cached result pool."""
         self.config.stations_include_carriers = checked
+        self._apply_cached_results()
+
+    def _toggle_recent(self, checked: bool) -> None:
+        """Change the API freshness pre-filter and immediately run it."""
+        self.config.stations_recent_only = checked
         self._refresh_stations()
+
+    def _toggle_follow_up_planets(self, _checked: bool) -> None:
+        """Apply the supplementary surface filter to cached candidates."""
+        self._apply_cached_results()
+
+    def _toggle_follow_up_carriers(self, _checked: bool) -> None:
+        """Apply the supplementary carrier filter to cached candidates."""
+        self._apply_cached_results()
+
+    def _set_search_controls_enabled(self, enabled: bool) -> None:
+        for button in (
+            self.planets_btn,
+            self.carriers_btn,
+            self.recent_btn,
+            self.refresh_btn,
+            self.planets_btn2,
+            self.carriers_btn2,
+        ):
+            button.setEnabled(enabled)
 
     def _copy_station_system(self, index: QModelIndex) -> None:
         """Clicking a System cell copies the name, ready to paste in-game."""
@@ -819,79 +1035,186 @@ class OverlayWindow(QWidget):
         QTimer.singleShot(2500, restore)
 
     def _start_station_search(self, state: AppState) -> None:
-        needs = state.outstanding_needs()
-        if not state.current_system or not needs:
+        reference = state.current_system
+        needs = dict(state.outstanding_needs())
+        if not reference or not needs:
             return
         self._searching = True
+        self._stations_searched = True
         self._search_seq += 1
         seq = self._search_seq
-        self._search_needs = dict(needs)
-        self.stations_status.setText(f"Searching Spansh near {state.current_system}…")
-        self.refresh_btn.setEnabled(False)
+        recent_only = self.recent_btn.isChecked()
+        qualifier = " recent" if recent_only else ""
+        self.stations_status.setText(
+            f"Searching Spansh near {reference} for 10{qualifier} orbital, "
+            f"10 planetary, and 10 carrier markets…"
+        )
+        self._set_search_controls_enabled(False)
         # Pass the amounts too: a station only counts as stocking a commodity
         # when its supply covers (a useful chunk of) the shortfall.
-        task = _SearchTask(
-            state.current_system,
-            dict(needs),
-            self.config.stations_include_planets,
-            self.config.stations_include_carriers,
-        )
+        task = _SearchTask(reference, needs, recent_only)
         # Keep a Python reference so the task and its signal object aren't
         # garbage-collected before the queued result reaches the GUI thread.
         task.setAutoDelete(False)
         self._search_task = task
         task.signals.done.connect(
-            lambda results, s=seq, k=self._station_search_key(state):
-            self._on_search_done(s, k, results)
+            lambda results, s=seq, ref=reference, demand=needs, recent=recent_only:
+            self._on_search_done(s, ref, demand, recent, results)
         )
         task.signals.error.connect(
             lambda message, s=seq: self._on_search_error(s, message)
         )
         self._search_pool.start(task)
 
-    def _on_search_done(self, seq: int, key: tuple, results: list) -> None:
+    def _on_search_done(
+        self,
+        seq: int,
+        reference: str,
+        needed: dict[str, int],
+        recent_only: bool,
+        results: list,
+    ) -> None:
         if seq != self._search_seq:
             return  # a newer search superseded this one
         self._searching = False
-        self._stations_loaded_key = key
-        self.refresh_btn.setEnabled(True)
+        self._search_task = None
+        self._set_search_controls_enabled(True)
+        self._search_ref = reference
+        self._search_needs = dict(needed)
+        self._search_recent_only = recent_only
+        self._station_results = list(results)
 
-        top_rows = results[:_STATIONS_SHOWN]
-        self.stations_model.set_rows(top_rows)
-
-        # Complementary stops for whatever the best station is missing, drawn
-        # from the full result pool but excluding stations already shown above.
-        shown = {(s.name, s.system) for s in top_rows}
-        follow_up = [
-            s
-            for s in station_search.stations_covering_missing(results, self._search_needs)
-            if (s.name, s.system) not in shown
-        ][:_STATIONS_SHOWN]
-        self.stations_model2.set_rows(follow_up)
-        has_follow = bool(follow_up)
-        self.stations_more_label.setText("Fill the rest at:" if has_follow else "")
-        self.stations_more_label.setVisible(has_follow)
-        self.stations_table2.setVisible(has_follow)
-
-        if results:
-            best = results[0]
-            self.stations_status.setText(
-                f"{len(results)} stations · best {best.match_count}/"
-                f"{best.needed_total} ({best.coverage * 100:.0f}%) "
-                f"at {best.distance_ly:,.1f} ly"
-            )
-        else:
+        if not self._station_results:
+            self.stations_model.set_rows([])
+            self._clear_follow_up_stations()
             self.stations_status.setText(
                 "No stations found selling those commodities nearby."
             )
+            self._fit_height()
+            return
+        self._apply_cached_results()
+
+    def _apply_cached_results(self) -> None:
+        """Rebuild both station tables from the one fetched pool, without I/O."""
+        if not self._station_results or not self._search_needs:
+            return
+        primary_results = station_search.filter_stations(
+            self._station_results,
+            include_planetary=self.config.stations_include_planets,
+            include_carriers=self.config.stations_include_carriers,
+        )
+        self.stations_model.set_rows(
+            station_search.limit_mixed_results(primary_results, _RESULTS_SHOWN)
+        )
+        primary = self.stations_model.row_at(0)
+        if primary is None:
+            self._clear_follow_up_stations()
+            self.stations_status.setText(
+                "No cached stations match the primary filters - enable Planets "
+                "or Carriers, or press ↻ Search."
+            )
+            self._fit_height()
+            return
+
+        residual = station_search.residual_demand(self._search_needs, primary)
+        secondary_pool = station_search.filter_stations(
+            self._station_results,
+            include_planetary=self.planets_btn2.isChecked(),
+            include_carriers=self.carriers_btn2.isChecked(),
+        )
+        follow_up = station_search.limit_mixed_results(
+            station_search.supplementary_candidates(
+                secondary_pool,
+                self._search_needs,
+                primary,
+            ),
+            _RESULTS_SHOWN,
+        )
+        self._show_follow_up_results(follow_up, residual)
+
+        # Completeness is calculated with a greedy stop plan independently of
+        # the alternatives displayed above. One planetary station completing
+        # the plan must not suppress useful carrier alternatives in the table.
+        filtered_plan = station_search.supplementary_stations(
+            secondary_pool,
+            self._search_needs,
+            primary,
+            limit=_RESULTS_SHOWN,
+        )
+        filtered_remaining = station_search.remaining_demand(
+            self._search_needs, [primary, *filtered_plan]
+        )
+        complete_follow_up = station_search.supplementary_stations(
+            self._station_results,
+            self._search_needs,
+            primary,
+            limit=_RESULTS_SHOWN,
+        )
+        pool_remaining = station_search.remaining_demand(
+            self._search_needs, [primary, *complete_follow_up]
+        )
+        orbital, planetary, carriers = self._category_counts(self._station_results)
+        text = (
+            f"Cached {orbital} orbital · {planetary} planetary · {carriers} carriers"
+            f" · best {primary.match_count}/{primary.needed_total} "
+            f"({primary.coverage * 100:.0f}%) at {primary.distance_ly:,.1f} ly"
+        )
+        if pool_remaining:
+            text += f" · {self._shortfall_text(pool_remaining)} not found in fetched data"
+        elif filtered_remaining:
+            text += (
+                f" · {self._shortfall_text(filtered_remaining)} hidden by the "
+                "supplementary filters"
+            )
+        elif residual:
+            text += f" · complete in {1 + len(filtered_plan)} stops"
+        else:
+            text += " · complete in one stop"
+        if self._search_recent_only:
+            text += " · ≤24h old"
+        self.stations_status.setText(text)
         self._fit_height()
+
+    @staticmethod
+    def _category_counts(results: list) -> tuple[int, int, int]:
+        orbital = sum(1 for station in results if not station.is_planetary and not station.is_carrier)
+        planetary = sum(1 for station in results if station.is_planetary and not station.is_carrier)
+        carriers = sum(1 for station in results if station.is_carrier)
+        return orbital, planetary, carriers
+
+    @staticmethod
+    def _shortfall_text(remaining: dict[str, int]) -> str:
+        names = sorted(remaining)
+        text = ", ".join(names[:3])
+        if len(names) > 3:
+            text += f" +{len(names) - 3} more"
+        return text
+
+    def _show_follow_up_results(self, results: list, residual: dict) -> None:
+        """Display a locally planned supplementary stop list.
+
+        The section remains visible after an empty result so its independent
+        filters are available for broadening the cached candidates.
+        """
+        self.stations_model2.set_rows(results[:_RESULTS_SHOWN])
+        has_residual = bool(residual)
+        self.stations_more_label.setText(
+            "Fill the rest at:"
+            if results
+            else "No cached stations match the remaining demand:"
+        )
+        self.stations_more_bar.setVisible(has_residual)
+        self.stations_table2.setVisible(has_residual)
 
     def _on_search_error(self, seq: int, message: str) -> None:
         if seq != self._search_seq:
             return
         self._searching = False
-        self.refresh_btn.setEnabled(True)
-        self._clear_follow_up_stations()
+        self._search_task = None
+        self._set_search_controls_enabled(True)
+        if not self._station_results:
+            self.stations_model.set_rows([])
+            self._clear_follow_up_stations()
         self.stations_status.setText(f"Search failed: {message}")
 
     def _update_carrier_label(self, state: AppState | None) -> None:
@@ -990,7 +1313,11 @@ class OverlayWindow(QWidget):
         screen = self.screen()
         avail = screen.availableGeometry().height() if screen else 1000
         # Leave room for the non-table chrome (header, progress, footer...).
-        table.cap = max(60, int(avail * 0.8) - 180)
+        table.cap = max(
+            theme.METRICS.auto_height_minimum,
+            int(avail * theme.METRICS.auto_height_screen_fraction)
+            - theme.METRICS.auto_height_chrome,
+        )
 
         # Activate the nested layouts so the top-level size hint reflects the new
         # row count immediately (without waiting for the event loop to relayout).

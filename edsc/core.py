@@ -73,6 +73,7 @@ def build_watcher(journal_dir: Path, state: AppState) -> JournalWatcher:
         journal_dir,
         on_event=state.apply_event,
         on_cargo=state.set_cargo,
+        on_market=state.set_market,
     )
 
 
@@ -131,6 +132,7 @@ def bootstrap(
     # live CargoTransfer events are applied normally.
     state.finish_replay()
     watcher.load_cargo_now()
+    watcher.load_market_now()
     # Replay positions the tail on the newest file it read; if every file was
     # skipped as stale (or the dir is empty), seek to the end explicitly so
     # old events are not re-read by the first poll.

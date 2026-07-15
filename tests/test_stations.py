@@ -1,6 +1,8 @@
 import io
 import json
+from collections import Counter
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from edsc import stations
@@ -59,6 +61,24 @@ def test_search_ranks_by_coverage_then_distance():
     # Beta only stocks Aluminium (Water isn't requested; supply 0 doesn't count).
     assert beta.match_count == 1
     assert beta.satisfaction == 0.5
+
+
+def test_missing_lists_the_unstocked_needs():
+    with mock.patch.object(stations.urllib.request, "urlopen", _fake_urlopen):
+        results = stations.search_stations("Sol", ["Aluminium", "Steel"])
+    alpha, beta = results
+    assert alpha.missing == []
+    assert beta.missing == ["Steel"]
+
+
+def test_demand_by_name_records_the_requested_tonnage():
+    with mock.patch.object(stations.urllib.request, "urlopen", _fake_urlopen):
+        results = stations.search_stations("Sol", {"Aluminium": 3000, "Steel": 500})
+    alpha, beta = results
+    # Every result carries the full request so tooltips can show each
+    # commodity's stocked share; amount-less lists record 0.
+    assert alpha.demand_by_name == {"Aluminium": 3000, "Steel": 500}
+    assert beta.demand_by_name == {"Aluminium": 3000, "Steel": 500}
 
 
 def test_supply_zero_is_not_counted():
@@ -161,10 +181,64 @@ def test_planetary_excluded_when_toggled_off():
         results = stations.search_stations(
             "Sol", ["Steel"], include_planetary=False
         )
-    # The query asks Spansh to skip surface stations, and any that slip
-    # through anyway are dropped in scoring.
-    assert bodies[0]["filters"]["is_planetary"] == {"value": False}
+    # Discovery always fills every category for reusable local filtering; the
+    # compatibility option only filters the returned pool.
+    categories = {
+        frozenset(body["filters"]["type"]["value"]) for body in bodies
+    }
+    assert categories == {
+        frozenset(stations._ORBITAL_TYPES),
+        frozenset(stations._PLANETARY_TYPES),
+        frozenset(stations._CARRIER_TYPES),
+    }
     assert [r.name for r in results] == ["Orbit"]
+
+
+def test_planetary_type_quirk_excluded_when_planets_off():
+    """Spansh sometimes reports surface types with is_planetary false; the
+    planets toggle must catch them by type too."""
+    quirky = _station("Ground", "Sol", 1.0, 10, True, {"Steel": 5000},
+                      planetary=False, station_type="Planetary Outpost")
+    orbital = _station("Orbit", "Sol", 2.0, 20, True, {"Steel": 5000})
+
+    @contextmanager
+    def fake(req, timeout=0):
+        payload = {"results": [quirky, orbital]}
+        yield io.BytesIO(json.dumps(payload).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations(
+            "Sol", ["Steel"], include_planetary=False
+        )
+    assert [r.name for r in results] == ["Orbit"]
+
+
+def test_owner_is_faction_for_stations_and_vanity_name_for_carriers():
+    port = _station("Alpha", "Sol", 5.0, 100, True, {"Steel": 5000})
+    port["controlling_minor_faction"] = "Sol Workers' Party"
+    named = _station("T9Z-94L", "Sol", 1.0, 10, True, {"Steel": 5000},
+                     station_type="Drake-Class Carrier")
+    # Spansh reports the placeholder faction "FleetCarrier" for carriers;
+    # the vanity name is the only real proprietor information it has.
+    named["controlling_minor_faction"] = "FleetCarrier"
+    named["carrier_name"] = "PEQUOD"
+    bare = _station("B4R-E77", "Sol", 2.0, 10, True, {"Steel": 5000},
+                    station_type="Drake-Class Carrier")
+    bare["controlling_minor_faction"] = "FleetCarrier"
+
+    @contextmanager
+    def fake(req, timeout=0):
+        payload = {"results": [port, named, bare]}
+        yield io.BytesIO(json.dumps(payload).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations("Sol", ["Steel"])
+    owners = {r.name: r.owner for r in results}
+    assert owners == {
+        "Alpha": "Sol Workers' Party",
+        "T9Z-94L": "PEQUOD",
+        "B4R-E77": "",  # placeholder faction never leaks through
+    }
 
 
 def test_carriers_included_by_default():
@@ -186,9 +260,11 @@ def test_carriers_excluded_when_toggled_off():
     carrier = _station("Hauler", "Sol", 1.0, 10, True, {"Steel": 5000},
                        station_type="Drake-Class Carrier")
     orbital = _station("Orbit", "Sol", 2.0, 20, True, {"Steel": 5000})
+    bodies = []
 
     @contextmanager
     def fake(req, timeout=0):
+        bodies.append(json.loads(req.data.decode()))
         payload = {"results": [carrier, orbital]}
         yield io.BytesIO(json.dumps(payload).encode())
 
@@ -196,15 +272,116 @@ def test_carriers_excluded_when_toggled_off():
         results = stations.search_stations(
             "Sol", ["Steel"], include_carriers=False
         )
-    # Spansh has no carrier filter to push into the query, so carriers are
-    # dropped in scoring instead.
+    categories = {
+        frozenset(body["filters"]["type"]["value"]) for body in bodies
+    }
+    assert frozenset(stations._CARRIER_TYPES) in categories
     assert [r.name for r in results] == ["Orbit"]
 
 
-def test_query_cap_still_scores_against_full_list():
-    """Commodities beyond the query cap still count in coverage scoring."""
+def test_search_always_fetches_each_category_explicitly():
+    orbital = _station("Orbit", "Sol", 2.0, 20, True, {"Steel": 5000})
+    bodies = []
+
+    @contextmanager
+    def fake(req, timeout=0):
+        bodies.append(json.loads(req.data.decode()))
+        yield io.BytesIO(json.dumps({"results": [orbital]}).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        stations.search_stations("Sol", ["Steel"])
+    categories = {
+        frozenset(body["filters"]["type"]["value"]) for body in bodies
+    }
+    assert categories == {
+        frozenset(stations._ORBITAL_TYPES),
+        frozenset(stations._PLANETARY_TYPES),
+        frozenset(stations._CARRIER_TYPES),
+    }
+
+
+def test_one_stop_station_outranks_nearer_partial_stockists():
+    """A distant full-coverage station beats nearby partial ones.
+
+    Per-commodity pages only see the nearest stockists of each commodity; the
+    combined AND query surfaces the one-stop station even when it's hundreds
+    of light years (i.e. a carrier jump or two) away.
+    """
+    near_steel = _station("Steelworks", "Near", 5.0, 10, True, {"Steel": 9000})
+    near_alu = _station("Foundry", "Near", 6.0, 10, True, {"Aluminium": 9000})
+    one_stop = _station("Everything", "Bubble", 420.0, 50, True,
+                        {"Steel": 9000, "Aluminium": 9000})
+
+    @contextmanager
+    def fake(req, timeout=0):
+        body = json.loads(req.data.decode())
+        market = body["filters"]["market"]
+        if len(market) > 1:
+            results = [one_stop]  # only the AND query finds it
+        elif market[0]["name"] == "Steel":
+            results = [near_steel]
+        else:
+            results = [near_alu]
+        yield io.BytesIO(json.dumps({"results": results}).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations(
+            "Sol", {"Steel": 5000, "Aluminium": 5000}
+        )
+    assert results[0].name == "Everything"
+    assert results[0].match_count == 2
+
+
+def test_single_commodity_skips_combined_query():
+    bodies = []
+
+    @contextmanager
+    def fake(req, timeout=0):
+        bodies.append(json.loads(req.data.decode()))
+        yield io.BytesIO(json.dumps({"results": []}).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        stations.search_stations("Sol", {"Steel": 5000})
+    # One request per category, with no redundant combined query.
+    assert len(bodies) == 3
+    assert all(
+        [m["name"] for m in body["filters"]["market"]] == ["Steel"]
+        for body in bodies
+    )
+    assert all(body["size"] == stations.RESULTS_PER_CATEGORY for body in bodies)
+
+
+def test_carrier_saturated_page_still_finds_stations():
+    """A region where the nearest stockists are wall-to-wall carriers.
+
+    Fetching the nearest page and dropping carriers afterwards would discard
+    every candidate; pushing the type filter into the query lets Spansh skip
+    straight to the real stations further out.
+    """
+    carriers = [
+        _station(f"K{i}X-{i}{i}Z", "Staging", 1.0 + i, 10, True, {"Steel": 9000},
+                 station_type="Drake-Class Carrier")
+        for i in range(25)
+    ]
+    port = _station("Far Port", "Bubble", 400.0, 100, True, {"Steel": 9000})
+
+    @contextmanager
+    def fake(req, timeout=0):
+        body = json.loads(req.data.decode())
+        # Spansh honours the type filter; without it the page is all carriers.
+        results = [port] if "type" in body["filters"] else carriers
+        yield io.BytesIO(json.dumps({"results": results}).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations(
+            "Sol", {"Steel": 5000}, include_carriers=False
+        )
+    assert [r.name for r in results] == ["Far Port"]
+
+
+def test_every_commodity_is_queried_and_combined_optimisation_is_capped():
+    """No needed item may disappear merely because the list exceeds the cap."""
     needed = {f"Commodity{i}": 1000 - i for i in range(stations.MAX_COMMODITIES + 2)}
-    # The two smallest shortfalls fall outside the query cap.
     market = {name: 5000 for name in needed}
     st = _station("Omni", "Sol", 1.0, 10, True, market)
 
@@ -213,15 +390,20 @@ def test_query_cap_still_scores_against_full_list():
     @contextmanager
     def fake(req, timeout=0):
         body = json.loads(req.data.decode())
-        queried.append(body["filters"]["market"][0]["name"])
+        queried.append([m["name"] for m in body["filters"]["market"]])
         payload = {"results": [st]}
         yield io.BytesIO(json.dumps(payload).encode())
 
     with mock.patch.object(stations.urllib.request, "urlopen", fake):
         results = stations.search_stations("Sol", needed)
 
-    assert len(queried) == stations.MAX_COMMODITIES
-    # Scoring uses the full needed list, not just the queried subset.
+    singles = [q[0] for q in queried if len(q) == 1]
+    combined = [q for q in queried if len(q) > 1]
+    # Each commodity is discovered independently in all three categories.
+    assert Counter(singles) == Counter({name: 3 for name in needed})
+    # Only the optional one-stop AND query is capped, once per category.
+    assert len(combined) == 3
+    assert all(len(query) == stations.MAX_COMMODITIES for query in combined)
     assert results[0].needed_total == stations.MAX_COMMODITIES + 2
     assert results[0].match_count == stations.MAX_COMMODITIES + 2
 
@@ -277,8 +459,44 @@ def test_amountless_list_reports_full_coverage():
     assert results and results[0].coverage == 1.0
 
 
+def test_residual_demand_after_top_station():
+    """What a supplementary search should look for: tonnage the best station
+    can't supply, including commodities it doesn't stock at all."""
+    st = _station("Top", "Sol", 1.0, 10, True,
+                  {"Steel": 5000, "Aluminium": 40, "Copper": 0})
+
+    @contextmanager
+    def fake(req, timeout=0):
+        yield io.BytesIO(json.dumps({"results": [st]}).encode())
+
+    needed = {"Steel": 8000, "Aluminium": 30, "Copper": 100}
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations("Sol", needed)
+    top = results[0]
+    # Supply is recorded per needed commodity, even below the match threshold.
+    assert top.supply_by_name == {"Steel": 5000, "Aluminium": 40}
+    residual = stations.residual_demand(needed, top)
+    # Steel is 3000 t short; Aluminium's 40 t covers the 30 needed; Copper
+    # isn't stocked at all.
+    assert residual == {"Steel": 3000, "Copper": 100}
+
+
+def test_residual_demand_amountless_list():
+    """Amount-less needs are residual only when not stocked at all."""
+    st = _station("Top", "Sol", 1.0, 10, True, {"Steel": 40})
+
+    @contextmanager
+    def fake(req, timeout=0):
+        yield io.BytesIO(json.dumps({"results": [st]}).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations("Sol", ["Steel"])
+    residual = stations.residual_demand(["Steel", "Copper"], results[0])
+    assert residual == {"Copper": 0}
+
+
 def test_stations_covering_missing_picks_complementary_stops():
-    """The follow-up list ranks stations by how much of the top's gap they fill."""
+    """The follow-up list is a minimal greedy plan, not duplicate alternatives."""
     top = _station("Top", "Sol", 1.0, 10, True, {"Steel": 5000, "Aluminium": 5000})
     filler = _station("Filler", "Wolf", 2.0, 20, True, {"Copper": 5000, "Gold": 5000})
     partial = _station("Partial", "Ross", 3.0, 30, True, {"Copper": 5000})
@@ -300,7 +518,246 @@ def test_stations_covering_missing_picks_complementary_stops():
     with mock.patch.object(stations.urllib.request, "urlopen", fake):
         results = stations.search_stations("Sol", needed)
     follow_up = stations.stations_covering_missing(results, needed)
-    # Top stocks Steel+Aluminium; the gap is Copper+Gold. Filler covers both and
-    # outranks Partial (Copper only). Top itself is never a follow-up.
-    assert [s.name for s in follow_up] == ["Filler", "Partial"]
+    # Filler covers the entire Copper+Gold gap, so Partial is redundant.
+    assert [s.name for s in follow_up] == ["Filler"]
+
+
+def test_results_are_capped_at_ten_per_category():
+    def category_stations(types):
+        if types == stations._CARRIER_TYPES:
+            return [
+                _station(
+                    f"C{i}", "Carriers", i + 1, 10, True, {"Steel": 5000},
+                    station_type="Drake-Class Carrier",
+                )
+                for i in range(15)
+            ]
+        if types == stations._PLANETARY_TYPES:
+            return [
+                _station(
+                    f"P{i}", "Surface", i + 1, 10, True, {"Steel": 5000},
+                    planetary=True, station_type="Planetary Port",
+                )
+                for i in range(15)
+            ]
+        return [
+            _station(f"O{i}", "Orbit", i + 1, 10, True, {"Steel": 5000})
+            for i in range(15)
+        ]
+
+    @contextmanager
+    def fake(req, timeout=0):
+        body = json.loads(req.data.decode())
+        raw = category_stations(body["filters"]["type"]["value"])
+        yield io.BytesIO(json.dumps({"results": raw}).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations("Sol", ["Steel"])
+
+    assert sum(not s.is_planetary and not s.is_carrier for s in results) == 10
+    assert sum(s.is_planetary and not s.is_carrier for s in results) == 10
+    assert sum(s.is_carrier for s in results) == 10
+
+
+def test_category_filters_add_to_the_orbital_baseline():
+    common = dict(
+        system="Sol",
+        distance_ly=1.0,
+        arrival_ls=10.0,
+        has_large_pad=True,
+        market_updated_at="2026-07-11T08:00:00Z",
+    )
+    orbital = stations.StationResult(
+        name="Orbit",
+        is_planetary=False,
+        station_type="Coriolis Starport",
+        is_carrier=False,
+        **common,
+    )
+    planetary = stations.StationResult(
+        name="Surface",
+        is_planetary=True,
+        station_type="Planetary Port",
+        is_carrier=False,
+        **common,
+    )
+    carrier = stations.StationResult(
+        name="K1T-00A",
+        is_planetary=False,
+        station_type="Drake-Class Carrier",
+        is_carrier=True,
+        **common,
+    )
+    pool = [orbital, planetary, carrier]
+
+    def names(planets, carriers):
+        return [
+            station.name
+            for station in stations.filter_stations(
+                pool,
+                include_planetary=planets,
+                include_carriers=carriers,
+            )
+        ]
+
+    assert names(False, False) == ["Orbit"]
+    assert names(True, False) == ["Orbit", "Surface"]
+    assert names(False, True) == ["Orbit", "K1T-00A"]
+    assert names(True, True) == ["Orbit", "Surface", "K1T-00A"]
+
+
+def test_mixed_result_cap_keeps_each_available_category_visible():
+    common = dict(
+        system="Sol",
+        arrival_ls=10.0,
+        has_large_pad=True,
+        market_updated_at="2026-07-11T08:00:00Z",
+    )
+    orbitals = [
+        stations.StationResult(
+            name=f"Orbit {index}",
+            distance_ly=float(index),
+            is_planetary=False,
+            station_type="Coriolis Starport",
+            is_carrier=False,
+            **common,
+        )
+        for index in range(10)
+    ]
+    planetary = stations.StationResult(
+        name="Surface",
+        distance_ly=20.0,
+        is_planetary=True,
+        station_type="Planetary Port",
+        is_carrier=False,
+        **common,
+    )
+    carrier = stations.StationResult(
+        name="K1T-00A",
+        distance_ly=30.0,
+        is_planetary=False,
+        station_type="Drake-Class Carrier",
+        is_carrier=True,
+        **common,
+    )
+
+    mixed = stations.limit_mixed_results(
+        [*orbitals, planetary, carrier], limit=10
+    )
+
+    assert len(mixed) == 10
+    assert mixed[0] is orbitals[0]
+    assert planetary in mixed
+    assert carrier in mixed
+
+
+def test_supplementary_candidates_keep_planetary_and_carrier_alternatives():
+    common = dict(
+        system="Sol",
+        arrival_ls=10.0,
+        has_large_pad=True,
+        market_updated_at="2026-07-11T08:00:00Z",
+        needed_total=2,
+        demand_by_name={"Steel": 100, "Aluminium": 100},
+    )
+    primary = stations.StationResult(
+        name="Orbit",
+        distance_ly=1.0,
+        is_planetary=False,
+        station_type="Coriolis Starport",
+        is_carrier=False,
+        matched=["Steel"],
+        supply_by_name={"Steel": 100},
+        **common,
+    )
+    planetary = stations.StationResult(
+        name="Surface",
+        distance_ly=2.0,
+        is_planetary=True,
+        station_type="Planetary Port",
+        is_carrier=False,
+        matched=["Aluminium"],
+        supply_by_name={"Aluminium": 100},
+        **common,
+    )
+    carrier = stations.StationResult(
+        name="K1T-00A",
+        distance_ly=3.0,
+        is_planetary=False,
+        station_type="Drake-Class Carrier",
+        is_carrier=True,
+        matched=["Aluminium"],
+        supply_by_name={"Aluminium": 100},
+        **common,
+    )
+    needed = {"Steel": 100, "Aluminium": 100}
+
+    candidates = stations.supplementary_candidates(
+        [primary, planetary, carrier], needed, primary
+    )
+
+    assert candidates == [planetary, carrier]
+    # The greedy completeness plan may need only one stop; that must not alter
+    # which valid alternatives are offered in the supplementary table.
+    assert stations.supplementary_stations(
+        [primary, planetary, carrier], needed, primary
+    ) == [planetary]
+
+
+def test_recent_only_is_a_24_hour_api_prefilter():
+    bodies = []
+
+    @contextmanager
+    def fake(req, timeout=0):
+        bodies.append(json.loads(req.data.decode()))
+        yield io.BytesIO(json.dumps({"results": []}).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        stations.search_stations("Sol", ["Steel"], recent_only=True)
+
+    ranges = [body["filters"]["market_updated_at"] for body in bodies]
+    assert len(ranges) == 3
+    assert all(item["comparison"] == "<=>" for item in ranges)
+    assert all(item["value"] == ranges[0]["value"] for item in ranges)
+    start, end = (
+        datetime.fromisoformat(value) for value in ranges[0]["value"]
+    )
+    assert end - start == timedelta(hours=24)
+    assert end.tzinfo == timezone.utc
+
+
+def test_planetary_and_carrier_results_complete_orbital_shortfall():
+    orbital = _station("Orbit", "Sol", 1.0, 10, True, {"Steel": 5000})
+    planetary = _station(
+        "Surface", "Sol", 2.0, 10, True, {"Aluminium": 5000},
+        planetary=True, station_type="Planetary Port",
+    )
+    carrier = _station(
+        "K1T-00A", "Sol", 3.0, 10, True, {"Copper": 5000},
+        station_type="Drake-Class Carrier",
+    )
+
+    @contextmanager
+    def fake(req, timeout=0):
+        body = json.loads(req.data.decode())
+        market = body["filters"]["market"]
+        types = body["filters"]["type"]["value"]
+        found = []
+        if len(market) == 1:
+            commodity = market[0]["name"]
+            if types == stations._ORBITAL_TYPES and commodity == "Steel":
+                found = [orbital]
+            elif types == stations._PLANETARY_TYPES and commodity == "Aluminium":
+                found = [planetary]
+            elif types == stations._CARRIER_TYPES and commodity == "Copper":
+                found = [carrier]
+        yield io.BytesIO(json.dumps({"results": found}).encode())
+
+    needed = {"Steel": 100, "Aluminium": 100, "Copper": 100}
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations("Sol", needed)
+
+    plan = [results[0], *stations.stations_covering_missing(results, needed)]
+    assert [station.name for station in plan] == ["Orbit", "Surface", "K1T-00A"]
+    assert stations.remaining_demand(needed, plan) == {}
 

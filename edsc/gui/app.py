@@ -126,9 +126,10 @@ class Application:
     #  actions
 
     def _apply_hud_colours(self) -> None:
-        """Tint the overlay palette to match the player's in-game HUD colours."""
+        """Rebuild every GUI style from the player's HUD colours and settings."""
         journal_dir = find_journal_dir(self.config.journal_dir or None)
         theme.apply_hud_matrix(hud_colors.load_matrix(journal_dir))
+        theme.apply_application_theme(self.qapp, self.config.font_point_size)
 
     def toggle_overlay(self) -> None:
         if self.overlay.isVisible():
@@ -143,10 +144,12 @@ class Application:
             prev_dir = self.config.journal_dir
             dialog.apply_to(self.config)
             self.config.save()
+            # The theme owns every application-level palette and style rule;
+            # rebuild it for both HUD-colour and font-size changes.
+            self._apply_hud_colours()
             if self.config.journal_dir != prev_dir:
                 # The graphics config lives in the same game install / Proton
-                # prefix as the journals, so re-resolve the HUD colours too.
-                self._apply_hud_colours()
+                # prefix as the journals, so the theme was re-resolved above.
                 self.engine.stop()
                 self.engine.start()
             self.overlay.apply_appearance()

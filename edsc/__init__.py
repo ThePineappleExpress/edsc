@@ -33,7 +33,7 @@ Carrier contents are "best guess" with an option to adjust manually.
 # here (tool.setuptools.dynamic), and the overlay credit label shows it.
 # packaging/aur/PKGBUILD keeps its own pkgver - it must point at the latest
 # *tagged* release tarball, so it is bumped when tagging, not here.
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 # Steam AppID for Elite Dangerous (used to locate Proton compatdata prefixes).
 ELITE_STEAM_APPID = "359320"

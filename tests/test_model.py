@@ -439,3 +439,124 @@ def test_removed_project_stays_removed_until_new_depot_event():
     depot_new["timestamp"] = "2026-07-06T12:00:00Z"
     reloaded.apply_event(depot_new)
     assert 7 in reloaded.projects
+
+
+MARKET = {
+    "event": "Market",
+    "MarketID": 3952442114,
+    "StationName": "Hartog Horizons",
+    "Items": [
+        {"Name": "$aluminium_name;", "Name_Localised": "Aluminium",
+         "Stock": 2500, "Demand": 0},
+        {"Name": "$steel_name;", "Name_Localised": "Steel",
+         "Stock": 0, "Demand": 800},  # demand only: the station buys, not sells
+    ],
+}
+
+
+def test_docked_station_stock_lists_only_in_stock_items():
+    state = AppState()
+    state.set_market(MARKET)
+    assert state.docked_station_stock() == set()  # not docked yet
+
+    state.apply_event(DOCKED)
+    assert state.docked_station_stock() == {"aluminium"}  # steel has no stock
+
+
+def test_docked_station_stock_ignores_stale_market_snapshot():
+    state = AppState()
+    state.apply_event(DOCKED)
+    # Market.json still describes the previously visited market.
+    state.set_market(dict(MARKET, MarketID=999))
+    assert state.docked_station_stock() == set()
+
+
+def test_undocked_clears_docked_station_stock():
+    state = AppState()
+    state.apply_event(DOCKED)
+    state.set_market(MARKET)
+    assert state.docked_station_stock() == {"aluminium"}
+
+    assert state.apply_event({"event": "Undocked", "MarketID": 3952442114}) is True
+    assert state.docked_market_id is None
+    assert state.docked_station_stock() == set()
+
+
+def test_location_event_restores_docked_state():
+    state = AppState()
+    # Relaunching the game while docked writes a Location event with Docked.
+    state.apply_event({
+        "event": "Location", "StarSystem": "Pleiades Sector PD-S b4-1",
+        "StarPos": [-81.0, -148.3, -337.1], "Docked": True,
+        "MarketID": 3952442114,
+    })
+    assert state.docked_market_id == 3952442114
+
+    # Jumping away means we're certainly not docked any more.
+    state.apply_event({
+        "event": "FSDJump", "StarSystem": "Maia",
+        "StarPos": [-81.8, -149.4, -343.4],
+    })
+    assert state.docked_market_id is None
+
+
+def test_docked_at_colonisation_ship_gets_site_type_prefix():
+    # Real journal shape: the raw StationName embeds the future station's
+    # name after the token, and there is no StationName_Localised fallback.
+    # Rendered like the game's other construction docks: "<site type>: <name>".
+    state = AppState()
+    state.apply_event({
+        "event": "Docked", "MarketID": 3967011330,
+        "StationName": "$EXT_PANEL_ColonisationShip; Nearchus Gateway",
+        "StarSystem": "Taurus Dark Region EL-Y d54",
+        "StationType": "SurfaceStation",
+        "timestamp": "2026-07-11T19:20:29Z",
+    })
+    state.apply_event(dict(DEPOT, MarketID=3967011330))
+    proj = state.projects[3967011330]
+    assert proj.station_name == "Colonisation Ship: Nearchus Gateway"
+    assert proj.title == (
+        "Colonisation Ship: Nearchus Gateway (Taurus Dark Region EL-Y d54)"
+    )
+
+
+def test_clean_station_name_fallbacks():
+    from edsc.model import clean_station_name
+
+    # Plain names pass through untouched.
+    assert clean_station_name("Orbital Construction Site: Hartog Horizons") \
+        == "Orbital Construction Site: Hartog Horizons"
+    # Unknown future tokens still derive a readable prefix.
+    assert clean_station_name("$EXT_PANEL_ColonisationBeacon; New Home") \
+        == "Colonisation Beacon: New Home"
+    # A bare token prefers the localised name, then the derived prefix.
+    assert clean_station_name(
+        "$EXT_PANEL_ColonisationShip;", "System Colonisation Ship"
+    ) == "System Colonisation Ship"
+    assert clean_station_name("$EXT_PANEL_ColonisationShip:#index=1;") \
+        == "Colonisation Ship"
+
+
+def test_token_station_name_heals_on_cache_load():
+    # Caches written before the fix hold the raw token name; loading one
+    # must clean it without waiting for a re-dock.
+    state = AppState()
+    state.apply_event(DOCKED)
+    state.apply_event(DEPOT)
+    data = state.to_dict()
+    data["projects"][0]["station_name"] = \
+        "$EXT_PANEL_ColonisationShip; Nearchus Gateway"
+    restored = AppState.from_dict(data)
+    assert restored.projects[3952442114].station_name \
+        == "Colonisation Ship: Nearchus Gateway"
+
+
+def test_docked_market_id_survives_cache_round_trip():
+    state = AppState()
+    state.apply_event(DOCKED)
+    restored = AppState.from_dict(state.to_dict())
+    assert restored.docked_market_id == 3952442114
+    # The market snapshot is not persisted (Market.json is re-read at startup).
+    assert restored.docked_station_stock() == set()
+    restored.set_market(MARKET)
+    assert restored.docked_station_stock() == {"aluminium"}
