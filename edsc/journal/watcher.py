@@ -1,32 +1,14 @@
-"""Poll-based tailer for Elite Dangerous journals and the Cargo.json and
-Market.json snapshots.
+"""Poll journals plus Cargo and Market snapshots for live updates."""
 
-
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-
-"""
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from . import locator
 
@@ -66,13 +48,7 @@ class JournalWatcher:
         files: list[Path] | None = None,
         should_stop: Callable[[], bool] | None = None,
     ) -> None:
-        """Read whole journal files in order to reconstruct current state.
-
-        The newest file is read through the tailing path, so the read offset
-        (and any trailing half-written line) carries straight over into live
-        polling -- events appended between replay and the first poll are not
-        lost, and there is no need to call :meth:`prime_latest` afterwards.
-        """
+        """Read whole journal files in order to reconstruct current state; the newest file is read through the tailing path, so the read offset (and any trailing half-written line) carries into live polling -- events appended between replay and the first poll aren't lost, and there's no need to call :meth:`prime_latest` afterwards."""
         if files is None:
             files = locator.all_journals(self.journal_dir)
         if not files:
@@ -87,8 +63,7 @@ class JournalWatcher:
         self._read_new_bytes(self._current_file)
 
     def prime_latest(self) -> None:
-        """Seek to the end of the newest journal without replaying it.
-        """
+        """Seek to the end of the newest journal without replaying it."""
         latest = locator.latest_journal(self.journal_dir)
         if latest is None:
             self._current_file = None
@@ -134,8 +109,7 @@ class JournalWatcher:
         if latest is None:
             return
 
-        # A newer journal file appeared: drain the tail of the old one, then
-        # switch. New files start at offset 0.
+        # A newer journal file appeared: drain the tail of the old one, then switch (new files start at offset 0).
         if self._current_file is None:
             self._current_file = latest
             self._offset = 0
@@ -209,9 +183,7 @@ class JournalWatcher:
             return
         if not isinstance(data, dict):
             return
-        # Cargo.json describes whichever vessel you're in; an SRV snapshot must
-        # not wipe the tracked ship hold. (Back in the ship, the file is
-        # rewritten with Vessel=Ship and picked up on the next poll.)
+        # Cargo.json describes whichever vessel you're in; an SRV snapshot must not wipe the tracked ship hold (back in the ship, the file is rewritten with Vessel=Ship and picked up next poll).
         if (data.get("Vessel") or "Ship") != "Ship":
             return
         self.on_cargo(data.get("Inventory") or [])

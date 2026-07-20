@@ -1,28 +1,11 @@
-"""Qt engine: owns the app state and pumps journal updates into the GUI thread.
+"""Pump journal updates from a worker into the Qt GUI thread."""
 
-
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-
-"""
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
 import threading
+from contextlib import suppress
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
@@ -35,14 +18,13 @@ from .model import AppState
 class _Worker(QObject):
     """Replays journal history and runs the polling loop off the GUI thread."""
 
-    # Bootstrap finished: hands the fully replayed state (and its watcher)
-    # over to the GUI thread. Emitted before any live event/cargo signal, so
-    # queued delivery order guarantees the GUI owns the state first.
+    # Bootstrap finished: hands the fully replayed state (and watcher) to the GUI thread, before any live signal, so queued delivery order guarantees the GUI owns the state first.
     ready = Signal(object, object)
     failed = Signal(str)
-    event = Signal(dict)
-    cargo = Signal(list)
-    market = Signal(dict)
+    # ``object``, not ``dict``/``list``: a typed queued signal converts to QVariantMap across the thread boundary, and Elite's unsigned 64-bit ids (up to 2**64-1) overflow Qt's signed long long and drop the whole event; ``object`` passes the Python value by reference, untouched.
+    event = Signal(object)
+    cargo = Signal(object)
+    market = Signal(object)
 
     def __init__(self, journal_dir: Path) -> None:
         super().__init__()
@@ -51,9 +33,7 @@ class _Worker(QObject):
 
     @Slot()
     def run(self) -> None:
-        # Replaying years of journal history can take a while; doing it here
-        # keeps the GUI responsive. The state is private to this thread until
-        # handed over via ``ready``.
+        # Replaying years of journal history can be slow; here it keeps the GUI responsive, state private to this thread until handed over via ``ready``.
         try:
             state = core.load_cached_state()
             state, watcher = core.bootstrap(
@@ -64,8 +44,7 @@ class _Worker(QObject):
             return
         if self._stop.is_set():
             return
-        # Live updates cross to the GUI thread as signals instead of mutating
-        # state off-thread.
+        # Live updates cross to the GUI thread as signals instead of mutating state off-thread.
         watcher.on_event = self.event.emit
         watcher.on_cargo = self.cargo.emit
         watcher.on_market = self.market.emit
@@ -81,6 +60,9 @@ class Engine(QObject):
 
     state_changed = Signal()
     status_changed = Signal(str)
+    # Public live-only stream: replay completes before callbacks switch to signals, so consumers (e.g. encounter effects) never see historical entries on startup; ``object`` (not ``dict``) so big unsigned ids survive a cross-thread consumer (see worker signals above).
+    live_event = Signal(object)
+    ready = Signal()
 
     def __init__(self, config: Config, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -88,10 +70,11 @@ class Engine(QObject):
         self.state = AppState()
         self.watcher = None
         self.journal_dir = None
+        # Optional EDDN relay, owned by the Application and set only while the user consents; sees live (post-replay) events, armed on ready; None means sharing is off.
+        self.uplink = None
         self._thread: QThread | None = None
         self._worker: _Worker | None = None
-        # Workers whose thread outlived stop()'s grace period; referenced here
-        # so Python doesn't destroy them while their thread is still running.
+        # Workers whose thread outlived stop()'s grace period, kept referenced so Python doesn't destroy them mid-run.
         self._orphans: list[tuple[_Worker, QThread]] = []
         self._dir_warning = ""
 
@@ -104,8 +87,7 @@ class Engine(QObject):
             self.state_changed.emit()
             return
 
-        # An explicit override that no longer exists falls back to
-        # auto-detection; say so instead of silently watching elsewhere.
+        # An explicit override that no longer exists falls back to auto-detection; say so instead of silently watching elsewhere.
         override = (self.config.journal_dir or "").strip()
         self._dir_warning = ""
         if override and Path(override).expanduser() != self.journal_dir:
@@ -113,8 +95,7 @@ class Engine(QObject):
                 f"Configured journal folder not found; using {self.journal_dir}. "
             )
 
-        # Show cached data immediately; the (possibly slow) journal replay
-        # happens off-thread and swaps the state in when it's done.
+        # Show cached data immediately; the (possibly slow) journal replay runs off-thread and swaps state in when done.
         self.state = core.load_cached_state()
         self.state_changed.emit()
         self.status_changed.emit(self._dir_warning + "Replaying journal history…")
@@ -130,9 +111,7 @@ class Engine(QObject):
         self._thread.started.connect(self._worker.run)
         self._thread.start()
 
-    # All slots ignore signals from a superseded worker: after a restart (e.g.
-    # journal dir changed in Settings) the old thread may still flush queued
-    # signals, and its events must not be applied to the new state.
+    # All slots ignore signals from a superseded worker: after a restart (e.g. journal dir change) the old thread may still flush queued signals that must not touch the new state.
 
     @Slot(object, object)
     def _on_ready(self, state: AppState, watcher) -> None:
@@ -140,9 +119,13 @@ class Engine(QObject):
             return
         self.state = state
         self.watcher = watcher
+        # History is fully replayed now; allow the relay to submit the live events that follow (the builders' freshness gate backstops this).
+        if self.uplink is not None:
+            self.uplink.arm()
         self.status_changed.emit(
             self._dir_warning + f"Watching: {self.journal_dir}"
         )
+        self.ready.emit()
         self.state_changed.emit()
 
     @Slot(str)
@@ -151,26 +134,40 @@ class Engine(QObject):
             return
         self.status_changed.emit(f"Journal replay failed: {message}")
 
-    @Slot(dict)
+    @Slot(object)
     def _on_event(self, event: dict) -> None:
         if self.sender() is not self._worker:
             return
+        # The relay tracks session/location from every event, even ones that don't change AppState, so submit augmentation stays correct.
+        if self.uplink is not None:
+            self.uplink.handle_event(event)
         if self.state.apply_event(event):
             self.state_changed.emit()
+        self.live_event.emit(event)
 
-    @Slot(list)
+    @Slot(object)
     def _on_cargo(self, inventory: list) -> None:
         if self.sender() is not self._worker:
             return
         self.state.set_cargo(inventory)
         self.state_changed.emit()
 
-    @Slot(dict)
+    @Slot(object)
     def _on_market(self, data: dict) -> None:
         if self.sender() is not self._worker:
             return
+        if self.uplink is not None:
+            self.uplink.handle_market(data)
         self.state.set_market(data)
         self.state_changed.emit()
+
+    def sync_eddn_now(self) -> tuple[bool, bool] | None:
+        """Force the relay to share the current session on user request; re-reads the newest journal and Market.json so the push reflects disk now (not just live events since arming), on the GUI thread (no race). Returns ``(journal_sent, market_sent)`` or None when sharing is off / no dir."""
+        if self.uplink is None or self.journal_dir is None:
+            return None
+        events = core.read_session_events(self.journal_dir)
+        market = core.read_market_snapshot(self.journal_dir)
+        return self.uplink.sync_now(events, market)
 
     def stop(self) -> None:
         """Stop the worker thread and persist state."""
@@ -182,10 +179,7 @@ class Engine(QObject):
         if thread is not None:
             thread.quit()
             if not thread.wait(2000) and worker is not None:
-                # Still replaying a huge file; let it finish in the background.
-                # Its signals are ignored by the sender checks above.
+                # Still replaying a huge file; let it finish in the background (its signals are ignored by the sender checks above).
                 self._orphans.append((worker, thread))
-        try:
+        with suppress(OSError):
             core.save_state(self.state)
-        except OSError:
-            pass

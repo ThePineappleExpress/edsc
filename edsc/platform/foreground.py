@@ -1,30 +1,12 @@
-"""Detect which window currently has focus, so the overlay can tell whether the
-game is in the foreground.
+"""Detect the active window through X11 or Win32."""
 
-
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-
-"""
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
 import os
 import sys
+from contextlib import suppress
 from dataclasses import dataclass
 
 
@@ -95,10 +77,8 @@ class X11ForegroundDetector(ForegroundDetector):
             return ""
 
     def close(self) -> None:
-        try:
+        with suppress(Exception):
             self._display.close()
-        except Exception:
-            pass
 
 
 class WindowsForegroundDetector(ForegroundDetector):

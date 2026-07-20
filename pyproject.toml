@@ -14,10 +14,18 @@ dependencies = [
     "PySide6>=6.6",
     # X11/XWayland focus detection + true click-through (Linux only).
     "python-xlib>=0.33; sys_platform == 'linux'",
+    # Global VKB joystick input and its bundled native SDL2 runtime (Windows).
+    "PySDL2>=0.9.17; sys_platform == 'win32'",
+    "pysdl2-dll>=2.32.10,<3; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = [
+    "pytest>=7",
+    "ruff>=0.9",
+    # Validates EDDN messages against the bundled official schemas in tests.
+    "jsonschema>=4",
+]
 
 [project.scripts]
 edsc = "edsc.__main__:main"
@@ -34,7 +42,18 @@ where = ["."]
 include = ["edsc*"]
 
 [tool.setuptools.package-data]
-edsc = ["assets/*.png"]
+edsc = ["assets/*.png", "assets/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "C4", "PIE", "RUF"]
+ignore = ["RUF001"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true

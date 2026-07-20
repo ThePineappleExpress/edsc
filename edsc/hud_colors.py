@@ -1,44 +1,6 @@
-"""Read the player's HUD colour matrix from Elite's graphics configuration.
+"""Read Elite's HUD color matrix from its graphics configuration."""
 
-The game tints its whole HUD through a 3x3 colour matrix defined under
-``GUIColour/Default`` in ``GraphicsConfiguration.xml`` (shipped inside the
-game folder) and optionally overridden per row in the user's
-``GraphicsConfigurationOverride.xml``.  Each output channel is a weighted sum
-of the source RGB channels::
-
-    red_out = MatrixRed[0]*r + MatrixRed[1]*g + MatrixRed[2]*b   (etc.)
-
-Reading the same values lets the overlay follow a recoloured HUD instead of
-always being stock orange.
-
-Resolution order:
-
-1. ``$EDSC_GRAPHICS_CONFIG`` -- explicit path to either XML file; used alone.
-2. The game folder's ``GraphicsConfiguration.xml`` (base rows), with any rows
-   from a ``GraphicsConfigurationOverride.xml`` found in the user's options
-   directory layered on top -- the same precedence the game applies.
-
-Missing rows fall back to the identity matrix, and ``load_matrix`` returns
-``None`` when no configuration is found at all.
-
-
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-"""
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
@@ -129,8 +91,7 @@ def _game_config_candidates() -> list[Path]:
 def _override_candidates(journal_dir: Path | None) -> list[Path]:
     """``GraphicsConfigurationOverride.xml`` in the user's options directory."""
     candidates: list[Path] = []
-    # The journal dir sits in the same (real or Wine) user profile as the
-    # options dir, so walking its parents finds nonstandard installs too.
+    # The journal dir sits in the same (real or Wine) user profile as the options dir, so walking its parents finds nonstandard installs too.
     if journal_dir is not None:
         for parent in Path(journal_dir).parents:
             candidates.append(parent / "AppData" / "Local" / _OVERRIDE_TAIL)
@@ -146,12 +107,7 @@ def _override_candidates(journal_dir: Path | None) -> list[Path]:
 
 
 def load_matrix(journal_dir: Path | None = None) -> Matrix | None:
-    """Best-effort HUD colour matrix, or ``None`` if no config was found.
-
-    ``journal_dir`` (the resolved journal directory, if known) anchors the
-    search for the per-user override file; auto-detected locations are probed
-    either way.
-    """
+    """Best-effort HUD colour matrix, or ``None`` if no config was found; ``journal_dir`` (the resolved journal directory, if known) anchors the search for the per-user override file, and auto-detected locations are probed either way."""
     env = os.environ.get("EDSC_GRAPHICS_CONFIG")
     if env:
         rows = _parse_rows(Path(env).expanduser())

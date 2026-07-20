@@ -28,7 +28,7 @@ RED_ROW_ONLY = """<?xml version="1.0" encoding="UTF-8" ?>
 
 def _no_steam(monkeypatch):
     """Keep tests hermetic: never probe this machine's real Steam installs."""
-    monkeypatch.setattr(hud_colors, "steam_library_folders", lambda: [])
+    monkeypatch.setattr(hud_colors, "steam_library_folders", list)
     monkeypatch.delenv("EDSC_GRAPHICS_CONFIG", raising=False)
 
 

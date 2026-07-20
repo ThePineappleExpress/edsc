@@ -10,6 +10,7 @@ venv/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+.coverage
 
 # makepkg work products (readme suggests running makepkg -si in packaging/aur)
 packaging/aur/src/

@@ -1,8 +1,5 @@
-import os
 import re
 from datetime import datetime, timedelta, timezone
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
@@ -13,12 +10,21 @@ from edsc.gui.table_model import (
     ST_COVER_COL,
     ST_MATCH_COL,
     ST_SYSTEM_COL,
+    SY_AGENT_COL,
+    SY_BODIES_COL,
+    SY_DIST_COL,
+    SY_FURTHEST_COL,
+    SY_STARS_COL,
+    SY_STEPS_COL,
+    SY_SYSTEM_COL,
     CommodityTableModel,
     StationTableModel,
+    SystemTableModel,
     formatted_date,
 )
 from edsc.model import CommodityRow
 from edsc.stations import StationResult
+from edsc.systems import AgentStation, BodyInfo, SystemResult
 
 # Icon rendering (QPixmap/QPainter) needs a Qt application instance.
 _app = QApplication.instance() or QApplication([])
@@ -58,16 +64,16 @@ def test_clearing_station_stock_removes_highlight():
 
 
 def _station(**overrides):
-    kwargs = dict(
-        name="Jameson Memorial", system="Shinrarta Dezhra", distance_ly=12.3,
-        arrival_ls=325.0, has_large_pad=True, is_planetary=False,
-        station_type="Coriolis Starport", is_carrier=False,
-        market_updated_at="2026-07-01", matched=["steel", "aluminium"],
-        missing=["copper", "titanium"],
-        needed_total=4, covered_tons=50, demand_tons=100,
-        supply_by_name={"steel": 100, "aluminium": 20, "copper": 10},
-        demand_by_name={"steel": 100, "aluminium": 40, "copper": 50, "titanium": 25},
-    )
+    kwargs = {
+        "name": "Jameson Memorial", "system": "Shinrarta Dezhra", "distance_ly": 12.3,
+        "arrival_ls": 325.0, "has_large_pad": True, "is_planetary": False,
+        "station_type": "Coriolis Starport", "is_carrier": False,
+        "market_updated_at": "2026-07-01", "matched": ["steel", "aluminium"],
+        "missing": ["copper", "titanium"],
+        "needed_total": 4, "covered_tons": 50, "demand_tons": 100,
+        "supply_by_name": {"steel": 100, "aluminium": 20, "copper": 10},
+        "demand_by_name": {"steel": 100, "aluminium": 40, "copper": 50, "titanium": 25},
+    }
     kwargs.update(overrides)
     return StationResult(**kwargs)
 
@@ -85,10 +91,7 @@ def test_station_tooltip_splits_stock_and_missing_columns():
     m = StationTableModel()
     m.set_rows([_station()])
     tip = m.data(m.index(0, 0), Qt.ToolTipRole)
-    # Borderless rich-text table: fully stocked entries green, partially
-    # stocked entries yellow, with their stocked share of the requirement
-    # right-aligned beside them in the same colour; missing entries red
-    # names only.
+    # Borderless rich-text table: fully stocked entries green, partially stocked entries yellow with their stocked share of the requirement right-aligned beside them in the same colour; missing entries red names only.
     assert ">Stock</th>" in tip and ">Missing</th>" in tip
     assert f"color: {theme.DONE.name()}'>steel</td>" in tip
     assert f"color: {theme.READY.name()}'>aluminium</td>" in tip
@@ -106,8 +109,7 @@ def test_station_tooltip_header_styles_name_system_and_icon():
     m = StationTableModel()
     m.set_rows([_station()])
     tip = m.data(m.index(0, 0), Qt.ToolTipRole)
-    # Port and system names sit on separate, individually styled lines,
-    # with the type sprite embedded beside the port name.
+    # Port and system names sit on separate, individually styled lines, with the type sprite embedded beside the port name.
     assert "Jameson Memorial - Shinrarta Dezhra" not in tip
     assert f"color: {theme.ORANGE_DIM.name()}" in tip and "font-weight: bold" in tip
     assert f"color: {theme.ORANGE.name()}" in tip
@@ -169,8 +171,7 @@ def test_carrier_row_joins_vanity_name_to_the_callsign():
             owner="",
         ),
     ])
-    # The Station column shows the vanity name beside the registration, as
-    # the tooltip title does; without one the callsign stands alone.
+    # The Station column shows the vanity name beside the registration, as the tooltip title does; without one the callsign stands alone.
     assert m.data(m.index(0, 0), Qt.DisplayRole) == "T9Z-94L · PEQUOD"
     assert m.data(m.index(1, 0), Qt.DisplayRole) == "H4X-0FF"
 
@@ -178,8 +179,7 @@ def test_carrier_row_joins_vanity_name_to_the_callsign():
 def test_station_row_never_joins_the_faction_to_the_name():
     m = StationTableModel()
     m.set_rows([_station(owner="Hutton Orbital Truckers Co-Operative")])
-    # Only carriers get the joined title; a station's minor faction stays
-    # in the tooltip sub-line.
+    # Only carriers get the joined title; a station's minor faction stays in the tooltip sub-line.
     assert m.data(m.index(0, 0), Qt.DisplayRole) == "Jameson Memorial"
 
 
@@ -257,3 +257,155 @@ def test_station_coverage_colours_both_split_columns():
     assert m._foreground(full, ST_MATCH_COL) == theme.DONE
     low = _station(covered_tons=10)
     assert m._foreground(low, ST_COVER_COL) == theme.SHORT
+
+
+def _candidate(**overrides):
+    kwargs = {
+        "name": "Lyncis Sector KC-V c2-14",
+        "id64": 1,
+        "distance_ly": 14.8,
+        "body_count": 6,
+        "bodies": [
+            BodyInfo("A", "Star", "M (Red dwarf) Star", 0.0, True, ""),
+            BodyInfo("B", "Star", "M (Red dwarf) Star", 2000.0, False, ""),
+            BodyInfo("A 1", "Planet", "Rocky Ice world", 350.0, False,
+                     "Terraformable"),
+            BodyInfo("A 2", "Planet", "Icy body", 1200.0, False,
+                     "Not terraformable"),
+        ],
+        "nearest_populated_ly": 4.4,
+        "updated_at": "2026-07-01 00:00:00+00",
+        "steps": 1,
+        "agent": AgentStation("Contact Hub", "Dharragense", 12.0),
+    }
+    kwargs.update(overrides)
+    return SystemResult(**kwargs)
+
+
+def test_system_row_formats_every_column():
+    m = SystemTableModel()
+    m.set_rows([_candidate()])
+    row = [m.data(m.index(0, c), Qt.DisplayRole) for c in range(7)]
+    assert row == [
+        "Lyncis Sector KC-V c2-14",  # System
+        "14.8",                      # Ly
+        "1",                         # Steps
+        "2",                         # Stars
+        "6",                         # Bodies (honk total over 4 scanned)
+        "2.0k",                      # Furthest (max distance_to_arrival)
+        "Contact Hub · 12.0 Ly",     # Agent
+    ]
+
+
+def test_system_unknowns_render_dim_question_marks():
+    m = SystemTableModel()
+    m.set_rows([SystemResult("Test")])
+    for col in (SY_DIST_COL, SY_STEPS_COL, SY_STARS_COL, SY_BODIES_COL,
+                SY_FURTHEST_COL):
+        assert m.data(m.index(0, col), Qt.DisplayRole) == "?"
+        assert m._foreground(m.row_at(0), col) == theme.TEXT_DIM
+    assert m.data(m.index(0, SY_SYSTEM_COL), Qt.DisplayRole) == "Test"
+
+
+def test_system_agent_cell_states():
+    m = SystemTableModel()
+    found = _candidate()
+    none = _candidate(agent=None)
+    error = _candidate(agent=None, agent_error=True)
+    m.set_rows([found, none, error])
+    assert m.data(m.index(0, SY_AGENT_COL), Qt.DisplayRole) == (
+        "Contact Hub · 12.0 Ly"
+    )
+    assert m.data(m.index(1, SY_AGENT_COL), Qt.DisplayRole) == "none"
+    assert m.data(m.index(2, SY_AGENT_COL), Qt.DisplayRole) == "?"
+
+
+def test_system_steps_colours_scale_with_reachability():
+    m = SystemTableModel()
+    assert m._foreground(_candidate(steps=1), SY_STEPS_COL) == theme.DONE
+    assert m._foreground(_candidate(steps=2), SY_STEPS_COL) == theme.READY
+    assert m._foreground(_candidate(steps=3), SY_STEPS_COL) == theme.READY
+    assert m._foreground(_candidate(steps=4), SY_STEPS_COL) == theme.ORANGE
+
+
+def test_system_agent_colours_encode_claimability():
+    m = SystemTableModel()
+    claimable = _candidate()  # steps 1, agent at 12 Ly
+    assert claimable.claimable
+    assert m._foreground(claimable, SY_AGENT_COL) == theme.DONE
+    far_agent = _candidate(agent=AgentStation("Hub", "Y", 17.0))
+    assert m._foreground(far_agent, SY_AGENT_COL) == theme.SHORT
+    bridged = _candidate(steps=2)  # agent close, but not claimable yet
+    assert m._foreground(bridged, SY_AGENT_COL) == theme.SHORT
+    assert m._foreground(_candidate(agent=None), SY_AGENT_COL) == theme.SHORT
+    error = _candidate(agent=None, agent_error=True)
+    assert m._foreground(error, SY_AGENT_COL) == theme.TEXT_DIM
+
+
+def test_unverified_system_dims_the_whole_row():
+    m = SystemTableModel()
+    unverified = _candidate(verified=False)  # steps 1, agent claimable
+    # Every populated cell dims, overriding the usual steps/agent semantics.
+    for col in (SY_SYSTEM_COL, SY_STEPS_COL, SY_AGENT_COL):
+        assert m._foreground(unverified, col) == theme.ORANGE_DIM
+    # Unknown cells stay the dimmer grey, not orange-dim.
+    bare = _candidate(verified=False, steps=None, agent=None, bodies=[],
+                      body_count=None, distance_ly=None)
+    assert m._foreground(bare, SY_STARS_COL) == theme.TEXT_DIM
+
+
+def test_verified_and_unchecked_systems_keep_normal_colours():
+    m = SystemTableModel()
+    # verified True and the default None both keep the rich reachability colour.
+    assert m._foreground(_candidate(verified=True), SY_STEPS_COL) == theme.DONE
+    assert m._foreground(_candidate(verified=None), SY_STEPS_COL) == theme.DONE
+
+
+def test_system_tooltip_reports_verification_state():
+    m = SystemTableModel()
+    m.set_rows([_candidate(verified=True), _candidate(verified=False),
+                _candidate(verified=None)])
+    tip_verified = m.data(m.index(0, 0), Qt.ToolTipRole)
+    # A confirmed candidate gets Raven's existing asset in the header's top-right corner, with no separate confirmation line consuming space.
+    assert "alt='Confirmed by Raven Colonial'" in tip_verified
+    assert "rowspan='2' valign='top' align='right'" in tip_verified
+    assert "Confirmed on Raven Colonial" not in tip_verified
+    # Absence of the corner icon is the only cue an unverified system needs; no line calls it out, so its tooltip stays free of Raven text like the unchecked case below.
+    assert "Raven Colonial" not in m.data(m.index(1, 0), Qt.ToolTipRole)
+    tip_none = m.data(m.index(2, 0), Qt.ToolTipRole)
+    assert "Raven Colonial" not in tip_none
+
+
+def test_system_tooltip_summarises_bodies_steps_and_agent():
+    m = SystemTableModel()
+    m.set_rows([_candidate()])
+    tip = m.data(m.index(0, SY_DIST_COL), Qt.ToolTipRole)
+    assert "Body data from:" in tip and "ago" in tip
+    assert "2 stars · 6 bodies · furthest 2.0k Ls" in tip
+    assert "Claimable now" in tip
+    assert "Contact Hub (Dharragense) at 12.0 Ly - in claim range" in tip
+    # Known-body breakdown with subtype counts and completeness fine print.
+    assert "M (Red dwarf) Star ×2" in tip
+    assert "Rocky Ice world" in tip and "Icy body" in tip
+    assert "1 terraformable body" in tip
+    assert "4 of 6 bodies scanned" in tip
+    # The copy hint belongs to the System column only.
+    assert "Click to copy" not in tip
+    assert "Click to copy the system name" in m.data(
+        m.index(0, SY_SYSTEM_COL), Qt.ToolTipRole
+    )
+
+
+def test_system_tooltip_counts_bridge_colonies():
+    m = SystemTableModel()
+    m.set_rows([_candidate(steps=3)])
+    tip = m.data(m.index(0, 0), Qt.ToolTipRole)
+    assert "Needs 2 bridge colonies (16 Ly each)" in tip
+
+
+def test_system_tooltip_flags_unscanned_systems():
+    m = SystemTableModel()
+    m.set_rows([_candidate(bodies=[], body_count=None, agent=None)])
+    tip = m.data(m.index(0, 0), Qt.ToolTipRole)
+    assert "No body data on Spansh" in tip
+    assert "No colonisation contact found nearby" in tip

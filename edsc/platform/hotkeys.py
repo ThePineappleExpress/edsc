@@ -1,29 +1,12 @@
-"""Global (system-wide) hotkeys on X11 / XWayland.
+"""Register system-wide hotkeys on X11 and XWayland."""
 
-
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-
-"""
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
 import os
-from typing import Callable
+from collections.abc import Callable
+from contextlib import suppress
 
 from PySide6.QtCore import QObject, QSocketNotifier
 
@@ -38,12 +21,7 @@ _MOD_MAP = {
 
 
 class GlobalHotkeys(QObject):
-    """Registers global key combos and calls back on the GUI thread.
-
-    Bindings are only *grabbed* while :meth:`set_active` has switched them on
-    (the app activates them while the game window is focused). Keeping them
-    grabbed permanently would steal the combos from every other application.
-    """
+    """Registers global key combos and calls back on the GUI thread; bindings are only *grabbed* while :meth:`set_active` has switched them on (the app activates them while the game window is focused), since grabbing them permanently would steal the combos from every other application."""
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -67,8 +45,7 @@ class GlobalHotkeys(QObject):
             self._display = display.Display()
             self._root = self._display.screen().root
             self._mod_mask = X.ControlMask | X.ShiftMask | X.Mod1Mask | X.Mod4Mask
-            # Combinations of "lock" modifiers to grab alongside, so the hotkey
-            # still fires with CapsLock/NumLock on.
+            # Combinations of "lock" modifiers to grab alongside, so the hotkey still fires with CapsLock/NumLock on.
             self._lock_masks = [
                 0,
                 X.LockMask,
@@ -83,10 +60,7 @@ class GlobalHotkeys(QObject):
             self.available = False
 
     def bind(self, sequence: str, callback: Callable[[], None]) -> bool:
-        """Register ``sequence`` (e.g. 'Ctrl+Shift+Left'). Returns True on success.
-
-        The combo is grabbed lazily, once :meth:`set_active` switches to True.
-        """
+        """Register ``sequence`` (e.g. 'Ctrl+Shift+Left'). Returns True on success; the combo is grabbed lazily, once :meth:`set_active` switches to True."""
         if not self.available:
             return False
         parsed = self._parse(sequence)
@@ -96,9 +70,7 @@ class GlobalHotkeys(QObject):
         if not keycode:
             return False
         self._bindings[(keycode, modifiers)] = callback
-        if self._active and not self._grab(keycode, modifiers):
-            return False
-        return True
+        return not self._active or self._grab(keycode, modifiers)
 
     def set_active(self, active: bool) -> None:
         """Grab the bound combos (True) or release them (False)."""
@@ -172,13 +144,11 @@ class GlobalHotkeys(QObject):
             callback()
 
     def _ungrab_all(self) -> None:
-        try:
+        with suppress(Exception):
             for keycode, modifiers in self._grabbed:
                 for lock in self._lock_masks:
                     self._root.ungrab_key(keycode, modifiers | lock)
             self._display.sync()
-        except Exception:
-            pass
         self._grabbed = []
 
     def stop(self) -> None:
@@ -187,9 +157,7 @@ class GlobalHotkeys(QObject):
             self._notifier = None
         if self._display is not None:
             self._ungrab_all()
-            try:
+            with suppress(Exception):
                 self._display.close()
-            except Exception:
-                pass
             self._display = None
         self.available = False

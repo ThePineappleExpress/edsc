@@ -102,8 +102,7 @@ def test_market_reloaded_on_change(tmp_path):
 
 
 def test_replay_hands_tail_position_to_live_polling(tmp_path):
-    """Events landing between replay and the first poll must not be lost, and
-    replayed lines must not be re-emitted by the first poll."""
+    """Events landing between replay and the first poll must not be lost, and replayed lines must not be re-emitted by the first poll."""
     j = tmp_path / "Journal.2026-01-01T000000.01.log"
     _write(j, [{"event": "A"}])
     seen = []

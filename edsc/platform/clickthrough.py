@@ -1,25 +1,6 @@
-"""Make a top-level Qt window transparent to mouse input (click-through), so
-clicks land on the game behind it.
+"""Make a top-level Qt window transparent to mouse input."""
 
-
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-
-"""
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
@@ -28,27 +9,17 @@ import sys
 
 from PySide6.QtCore import Qt
 
-_x11_display = None
+from ._x11 import connection
 
 
 def set_click_through(window, enabled: bool) -> bool:
-    """Toggle click-through on ``window``. Returns True if a *native* pass-through
-    was applied (not just the Qt attribute fallback)."""
+    """Toggle click-through on ``window``; returns True if a *native* pass-through was applied (not just the Qt attribute fallback)."""
     window.setAttribute(Qt.WA_TransparentForMouseEvents, enabled)
     if sys.platform == "win32":
         return _windows_set(window, enabled)
     if os.environ.get("DISPLAY"):
         return _x11_set(window, enabled)
     return False
-
-
-def _x11_conn():
-    global _x11_display
-    if _x11_display is None:
-        from Xlib import display
-
-        _x11_display = display.Display()
-    return _x11_display
 
 
 def _x11_set(window, enabled: bool) -> bool:
@@ -59,7 +30,7 @@ def _x11_set(window, enabled: bool) -> bool:
         wid = int(window.winId())
         if not wid:
             return False
-        conn = _x11_conn()
+        conn = connection()
         xwin = conn.create_resource_object("window", wid)
         if enabled:
             # Empty input region -> pointer events fall through to windows below.

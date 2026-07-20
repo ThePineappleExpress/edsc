@@ -1,39 +1,50 @@
-"""Entry point: ``python -m edsc`` (or the ``edsc`` console script).
+"""Command-line and module entry point."""
 
-
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-"""
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
+import argparse
+import os
 import sys
 
 
-def main() -> int:
-    # Works both as `python -m edsc` / the `edsc` console script (package context
-    # present) and when this file is run directly as `python edsc/__main__.py`
-    # (no parent package) -- in the latter case, put the project root on the path
-    # and import absolutely.
+def _apply_cli(argv: list[str]) -> None:
+    """Turn EDSC's own flags into the environment switches they stand for; ``--dev`` is exported rather than threaded through ``run()`` because the switch is read lazily and far apart (console tracing and the controller tester each look it up with no shared object to hang a flag off). Qt's own arguments (``-platform`` and friends) are left in ``sys.argv`` for ``QApplication``."""
+    parser = argparse.ArgumentParser(
+        prog="edsc",
+        description="Elite Dangerous Supply Chain overlay.",
+    )
+    parser.add_argument(
+        "--dev",
+        action="store_true",
+        help=(
+            "Enable development mode: console tracing for searches, plus the "
+            "live controller tester in Settings. Same as EDSC_DEV=1."
+        ),
+    )
+    args, _ = parser.parse_known_args(argv)
+    if args.dev:
+        os.environ["EDSC_DEV"] = "1"
+
+
+def _prefer_xcb() -> None:
+    """Pin the Qt platform to xcb on Linux X11 sessions before Qt loads; must run before ``QApplication`` is constructed, and is skipped on Windows, when the platform is already chosen (e.g. tests set ``offscreen``), or when no X display is present."""
+    if sys.platform == "win32":
+        return
+    if os.environ.get("QT_QPA_PLATFORM"):
+        return
+    if os.environ.get("DISPLAY"):
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+
+
+def main(argv: list[str] | None = None) -> int:
+    _apply_cli(sys.argv[1:] if argv is None else argv)
+    _prefer_xcb()
+    # Works as `python -m edsc` / the `edsc` console script (package context present) and when run directly as `python edsc/__main__.py` (no parent package) -- in the latter case, put the project root on the path and import absolutely.
     try:
         from .gui.app import run
     except ImportError:
-        import os
-
         sys.path.insert(
             0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )

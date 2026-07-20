@@ -11,13 +11,18 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, windows-latest]
+        python: ["3.14"]
+        include:
+          # The oldest interpreter pyproject claims (requires-python >=3.10); one Linux job keeps that floor honest.
+          - os: ubuntu-22.04
+            python: "3.10"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python }}
 
       # PySide6 needs libEGL even just to import on a headless runner.
       - name: Install Qt runtime libraries (Linux)
@@ -26,6 +31,9 @@ jobs:
 
       - name: Install package
         run: pip install ".[dev]"
+
+      - name: Lint
+        run: ruff check edsc tests
 
       - name: Run tests
         run: pytest

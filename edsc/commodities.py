@@ -1,24 +1,6 @@
-"""Commodity name handling.
+"""Commodity name normalization and display-name registry."""
 
-
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-
-"""
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
@@ -31,11 +13,7 @@ _DISPLAY_REGISTRY: dict[str, str] = {}
 
 
 def canonical_name(raw: str | None) -> str:
-    """Reduce any ED commodity spelling to a canonical lowercase id.
-
-    ``$Aluminium_name;`` -> ``aluminium``; ``aluminium`` -> ``aluminium``.
-    Unknown/empty input yields ``""``.
-    """
+    """Reduce any ED commodity spelling to a canonical lowercase id (``$Aluminium_name;`` -> ``aluminium``, ``aluminium`` -> ``aluminium``); unknown/empty input yields ``""``."""
     if not raw:
         return ""
     s = raw.strip()
@@ -46,8 +24,7 @@ def canonical_name(raw: str | None) -> str:
 
 
 def register_display_name(raw: str | None, localised: str | None) -> str:
-    """Record a display name for a commodity and return its canonical id.
-    """
+    """Record a display name for a commodity and return its canonical id."""
     key = canonical_name(raw)
     if key and localised and key not in _DISPLAY_REGISTRY:
         _DISPLAY_REGISTRY[key] = localised
@@ -63,12 +40,7 @@ def display_name(key: str) -> str:
 
 
 def registry_snapshot() -> dict[str, str]:
-    """The learned id -> display-name mapping, for persistence.
-
-    Display names are only learned from live journal events; persisting them
-    keeps names (and the Spansh queries built from them) correct even when the
-    journals that taught us the names are gone.
-    """
+    """The learned id -> display-name mapping, for persistence; display names are only learned from live journal events, so persisting them keeps names (and the Spansh queries built from them) correct even when those journals are gone."""
     return dict(_DISPLAY_REGISTRY)
 
 

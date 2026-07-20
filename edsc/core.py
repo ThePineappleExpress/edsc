@@ -1,31 +1,13 @@
-"""Non-GUI glue: journal-dir resolution, state bootstrap, and persistence.
+"""Journal resolution, state bootstrap, and persistence."""
 
-
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-
-"""
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 
 from . import paths
 from .config import Config
@@ -35,9 +17,7 @@ from .model import AppState
 
 STATE_FILENAME = "state.json"
 
-# Safety margin when comparing journal mtimes (filesystem clock) against the
-# persisted event watermark (game-written UTC): over-keeping a file is cheap,
-# over-skipping loses events.
+# Safety margin comparing journal mtimes (filesystem clock) against the persisted event watermark (game-written UTC): over-keeping a file is cheap, over-skipping loses events.
 _REPLAY_MTIME_MARGIN_S = 3600.0
 
 
@@ -89,13 +69,7 @@ def _watermark_epoch(watermark: str) -> float | None:
 
 
 def journals_to_replay(journal_dir: Path, watermark: str) -> list[Path]:
-    """Journal files still worth replaying on top of a cached state.
-
-    Everything in a file whose last write predates the watermark (minus a
-    safety margin) was already folded into the persisted state, so it can be
-    skipped -- this keeps startup fast even with years of journal history.
-    Without a usable watermark every file is replayed.
-    """
+    """Journal files still worth replaying on top of a cached state; everything in a file written before the watermark (minus a safety margin) was already folded in and can be skipped -- keeping startup fast even with years of history. Without a usable watermark every file is replayed."""
     files = locator.all_journals(journal_dir)
     cutoff = _watermark_epoch(watermark)
     if cutoff is None:
@@ -116,26 +90,53 @@ def bootstrap(
     state: AppState | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> tuple[AppState, JournalWatcher]:
-    """Reconstruct current state from journal history and prime live tailing.
-
-    Replays journal files not already covered by the cached state's watermark
-    (so previously-visited projects reappear), loads the current cargo, and
-    leaves the watcher positioned at the end of the replayed history so a
-    subsequent ``run``/``poll_once`` only sees genuinely new events.
-    """
+    """Reconstruct current state from journal history and prime live tailing; replays files not already covered by the cached watermark (so visited projects reappear), loads current cargo, and leaves the watcher at the end of replayed history so a subsequent ``run``/``poll_once`` only sees genuinely new events."""
     if state is None:
         state = AppState()
     watcher = build_watcher(journal_dir, state)
     files = journals_to_replay(journal_dir, state.last_event_time)
     watcher.replay_history(files, should_stop=should_stop)
-    # History is fully replayed: release the carrier replay gate so subsequent
-    # live CargoTransfer events are applied normally.
+    # History is fully replayed: release the carrier replay gate so subsequent live CargoTransfer events are applied normally.
     state.finish_replay()
     watcher.load_cargo_now()
     watcher.load_market_now()
-    # Replay positions the tail on the newest file it read; if every file was
-    # skipped as stale (or the dir is empty), seek to the end explicitly so
-    # old events are not re-read by the first poll.
+    # Replay positions the tail on the newest file it read; if every file was skipped as stale (or the dir is empty), seek to the end explicitly so old events aren't re-read by the first poll.
     if not files or files[-1] != locator.latest_journal(journal_dir):
         watcher.prime_latest()
     return state, watcher
+
+
+def read_session_events(journal_dir: Path) -> list[dict]:
+    """Every event dict in the newest journal file, in order; Elite writes one journal per session, so the newest file holds the current Fileheader/LoadGame (version, expansions) plus latest position/docking events -- everything a manual EDDN sync needs to warm its trackers. Malformed lines are skipped, not aborted on."""
+    latest = locator.latest_journal(journal_dir)
+    if latest is None:
+        return []
+    try:
+        text = latest.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    events: list[dict] = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and "event" in event:
+            events.append(event)
+    return events
+
+
+def read_market_snapshot(journal_dir: Path) -> dict | None:
+    """The current Market.json as a dict, or None if absent/unreadable."""
+    try:
+        data = json.loads(
+            (journal_dir / "Market.json").read_text(
+                encoding="utf-8", errors="replace"
+            )
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None

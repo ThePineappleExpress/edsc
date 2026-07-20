@@ -1,7 +1,9 @@
 import re
 from pathlib import Path
+from unittest import mock
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
 
 from edsc.gui import theme
@@ -32,23 +34,97 @@ def test_application_palette_comes_from_theme_colours():
 def test_application_stylesheet_covers_native_widgets():
     css = theme.application_stylesheet(font_pt=11)
     assert "QDialog, QMenu" in css
-    assert "QLineEdit, QSpinBox" in css
+    assert "QLineEdit, QSpinBox, QComboBox" in css
     assert "QSlider::handle:horizontal" in css
     assert f"QLabel#{theme.MUTED_ROLE}" in css
+    assert f"QLabel#{theme.ERROR_ROLE}" in css
     assert "font-size: 11pt" in css
 
 
-def test_overlay_uses_orange_text_dim_headers_and_tab_style_buttons():
+@pytest.mark.parametrize(
+    ("font_pt", "expected"),
+    [(7, 1), (10, 2), (15, 3), (20, 4)],
+)
+def test_text_padding_scales_linearly_from_two_pixels_at_ten_points(
+    font_pt, expected
+):
+    assert theme.text_padding_px(font_pt) == expected
+
+
+def test_every_text_surface_receives_scaled_padding():
+    app_css = theme.application_stylesheet(font_pt=10)
+    panel_css = theme.panel_stylesheet(alpha=200, font_pt=10)
+
+    assert (
+        f"QDialog QLabel {{ color: {theme.ORANGE.name()}; padding: 2px; }}"
+        in app_css
+    )
+    assert "QCheckBox, QRadioButton {\n        color:" in app_css
+    assert "padding: 2px; spacing: 6px" in app_css
+    assert "QLabel {\n        color:" in panel_css
+    assert "padding: 2px;" in panel_css
+    assert "QTableView::item { padding: 2px; }" in panel_css
+    assert f"QLabel#{theme.TITLE_ROLE} {{" in panel_css
+    assert "padding: 2px; font-weight: 900" in panel_css
+    assert f"QLabel#{theme.STATUS_ROLE}, QLabel#{theme.CREDIT_ROLE}" in panel_css
+
+
+@pytest.mark.parametrize(("font_pt", "padding"), [(10, 2), (20, 4)])
+def test_label_roles_use_global_padding_not_their_internal_font_size(
+    font_pt, padding
+):
+    css = theme.panel_stylesheet(alpha=200, font_pt=font_pt)
+
+    title_rule = css.split(f"QLabel#{theme.TITLE_ROLE} {{", 1)[1].split("}", 1)[0]
+    status_rule = css.split(f"QLabel#{theme.STATUS_ROLE},", 1)[1].split("}", 1)[0]
+    assert f"font-size: {font_pt + 4}pt" in title_rule
+    assert f"padding: {padding}px" in title_rule
+    assert f"font-size: {font_pt - 2}pt" in status_rule
+    assert f"padding: {padding}px" in status_rule
+
+
+def test_component_padding_grows_with_the_configured_font():
+    app_css = theme.application_stylesheet(font_pt=20)
+    panel_css = theme.panel_stylesheet(alpha=200, font_pt=20)
+
+    assert "padding: 6px 12px;" in app_css  # line edit / spin box
+    assert "padding: 8px 24px;" in app_css  # dialog tabs
+    assert "padding: 6px 20px;" in panel_css  # overlay tabs and tools
+    assert "QTableView::item { padding: 4px; }" in panel_css
+
+
+def test_overlay_uses_orange_text_transparent_headers_and_tab_style_buttons():
     css = theme.panel_stylesheet(alpha=200, font_pt=10)
-    assert f"QLabel {{ color: {theme.ORANGE.name()}" in css
+    assert f"color: {theme.ORANGE.name()}; font-size: 10pt" in css
     assert f"QTableView {{\n        color: {theme.ORANGE.name()}" in css
     assert (
-        f"QHeaderView::section {{\n"
-        f"        background: rgba({theme.BG.red()},{theme.BG.green()},"
-        f"{theme.BG.blue()},200); color: {theme.ORANGE_DIM.name()}"
+        "QHeaderView {\n"
+        "        background: transparent;\n"
+        "    }\n"
+        "    QHeaderView::section {\n"
+        "        background: transparent; "
+        f"color: {theme.ORANGE_DIM.name()}"
     ) in css
     assert "QToolButton:checked, QToolButton:pressed" in css
     assert f"color: {theme.BG_TAB.name()}; background: rgba(" in css
+
+
+def test_configure_table_left_aligns_column_headers():
+    table = mock.Mock()
+
+    theme.configure_table(table)
+
+    table.horizontalHeader().setDefaultAlignment.assert_called_once_with(
+        Qt.AlignLeft | Qt.AlignVCenter
+    )
+
+
+def test_table_rows_scale_with_the_font_size():
+    table = mock.Mock()
+
+    theme.configure_table(table, font_pt=20)
+
+    table.verticalHeader().setDefaultSectionSize.assert_called_once_with(40)
 
 
 def test_window_controls_have_a_dedicated_compact_style():

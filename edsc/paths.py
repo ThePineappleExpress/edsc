@@ -1,27 +1,6 @@
-"""Per-user config/state directories, resolved without third-party deps.
+"""Resolve per-user config, state, and asset paths."""
 
-Follows the XDG Base Directory spec on Linux and ``%APPDATA%``/``%LOCALAPPDATA%``
-on Windows.
-
-
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-
-"""
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
@@ -61,11 +40,7 @@ def ensure_dir(path: Path) -> Path:
 
 
 def asset_path(name: str) -> Path:
-    """Resolve a bundled asset, working both from source and a frozen build.
-
-    PyInstaller unpacks bundled data into ``sys._MEIPASS`` at runtime; in a
-    normal checkout the assets live next to this module in ``edsc/assets``.
-    """
+    """Resolve a bundled asset, working both from source and a frozen build; PyInstaller unpacks bundled data into ``sys._MEIPASS`` at runtime, while a normal checkout has the assets next to this module in ``edsc/assets``."""
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         candidate = Path(meipass) / "edsc" / "assets" / name

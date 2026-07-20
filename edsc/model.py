@@ -1,33 +1,13 @@
-"""Domain model: colonisation projects, cargo, and the merge between them.
+"""Pure domain model for projects, cargo, and journal events."""
 
-The model is pure data + logic with no GUI or IO dependencies, so it can be
-unit-tested headlessly and reconstructed by replaying journal events in order.
-
-
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-
-"""
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 from .commodities import (
     canonical_name,
@@ -41,37 +21,25 @@ from .commodities import (
 COMBINED_MARKET_ID = -1
 # Sentinel tab id for the "nearest stations" search view (not a real market).
 STATIONS_MARKET_ID = -2
-# Watermark that sorts after every real journal timestamp; used to gate *all*
-# replayed CargoTransfer deltas when migrating a pre-watermark cache.
+# Sentinel tab id for the "colonization targets" search view (not a real market).
+COLONIZE_MARKET_ID = -3
+# Watermark sorting after every real journal timestamp; gates *all* replayed CargoTransfer deltas when migrating a pre-watermark cache.
 _FUTURE_WATERMARK = "9999-12-31T23:59:59Z"
 
 
-# Leading localisation token in a journal StationName, e.g.
-# "$EXT_PANEL_ColonisationShip; Nearchus Gateway".
+# Leading localisation token in a journal StationName, e.g. "$EXT_PANEL_ColonisationShip; Nearchus Gateway".
 _STATION_TOKEN_RE = re.compile(r"^\$(?P<token>[^;]*);\s*(?P<rest>.*)$")
 
 
 def _prefix_from_token(token: str) -> str:
-    """Readable site-type prefix from a localisation token body, e.g.
-    ``EXT_PANEL_ColonisationShip`` -> ``Colonisation Ship``. Derived rather
-    than mapped so future site tokens get a sensible prefix too."""
+    """Readable site-type prefix from a localisation token body (``EXT_PANEL_ColonisationShip`` -> ``Colonisation Ship``); derived not mapped so future tokens get a sensible prefix too."""
     token = token.split(":", 1)[0]  # drop ":#index=1"-style suffixes
     token = token.removeprefix("EXT_PANEL_").replace("_", " ")
     return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", token).strip()
 
 
 def clean_station_name(name: str, localised: str = "") -> str:
-    """Human-readable station name from a raw journal StationName.
-
-    Docking at a System Colonisation Ship writes the raw name as
-    ``$EXT_PANEL_ColonisationShip; Nearchus Gateway`` — a localisation token
-    with the future station's name appended — and the Docked event carries no
-    StationName_Localised fallback. Render it in the same style the game uses
-    for other construction docks ("Orbital Construction Site: Hartog
-    Horizons"): a site-type prefix derived from the token, then the station
-    name. A bare token falls back to the localised name, then the derived
-    prefix, then the raw value.
-    """
+    """Human-readable station name from a raw journal StationName; a Colonisation Ship name like ``$EXT_PANEL_ColonisationShip; Nearchus Gateway`` (no _Localised fallback) renders as "<derived site-type prefix>: <name>", a bare token falling back to localised, then prefix, then the raw value."""
     m = _STATION_TOKEN_RE.match(name)
     if m is None:
         return name
@@ -161,10 +129,12 @@ class Project:
         return self.station_name or self.system_name or f"Depot {self.market_id}"
 
     def total_required(self) -> int:
-        return sum(l.required for l in self.lines.values())
+        return sum(line.required for line in self.lines.values())
 
     def total_provided(self) -> int:
-        return sum(min(l.provided, l.required) for l in self.lines.values())
+        return sum(
+            min(line.provided, line.required) for line in self.lines.values()
+        )
 
     def progress_fraction(self) -> float:
         """Prefer the game's own progress value; else derive from totals."""
@@ -212,41 +182,27 @@ class AppState:
         self.projects: dict[int, Project] = {}
         self.cargo: dict[str, int] = {}
         self.current_market_id: int | None = None
-        # Current player location, learned from FSDJump/Location/CarrierJump (and
-        # the system name from Docked). Used as the reference point for the
-        # "nearest stations" search. Coords are (x, y, z) in light years.
+        # Current player location from FSDJump/Location/CarrierJump (system name also from Docked); reference point for the "nearest stations" search, coords (x, y, z) in Ly.
         self.current_system: str = ""
         self.current_coords: tuple[float, float, float] | None = None
-        # Where the ship is docked right now (None while in flight), and the
-        # commodities in stock at that station's market, from the Market.json
-        # snapshot. The overlay highlights project lines you can buy on the
-        # spot. The snapshot remembers its own market id: Market.json always
-        # describes the last market *opened*, which may not be where we are.
+        # Where the ship is docked now (None in flight) and the in-stock commodities at that market from Market.json (to highlight buyable project lines); the snapshot keeps its own market id since Market.json describes the last market *opened*, not necessarily where we are.
         self.docked_market_id: int | None = None
         self._market_id: int | None = None
         self._market_stock: set[str] = set()
-        # market id -> (station_name, system_name) learned from Docked events,
-        # so a depot event can be named even if we docked before it fired.
+        # market id -> (station_name, system_name) from Docked events, so a depot event can be named even if we docked before it fired.
         self._station_names: dict[int, tuple[str, str]] = {}
-        # Tombstones for user-removed projects: market id -> removal watermark.
-        # Depot events at/before the watermark are ignored so a replay doesn't
-        # resurrect the project; docking there again (a newer event) re-adds it.
+        # Tombstones for user-removed projects (market id -> removal watermark); depot events at/before it are ignored so a replay can't resurrect the project, docking again (newer event) re-adds it.
         self._removed: dict[int, str] = {}
 
-        # Fleet carrier: itemised cargo can't be read from journals directly, so
-        # we track it from CargoTransfer deltas (persisted). carrier_total is the
-        # authoritative tonnage from CarrierStats, used to flag under-tracking.
+        # Fleet carrier: itemised cargo isn't in journals, so tracked from persisted CargoTransfer deltas; carrier_total is tonnage aboard, re-based by CarrierStats and moved by transfers between (CarrierStats only fires on opening carrier management, else stale for days).
         self.carrier_cargo: dict[str, int] = {}
         self.carrier_name: str = ""
         self.carrier_callsign: str = ""
         self.carrier_total: int = 0
+        # Usable cargo space from CarrierStats, not the 25,000 t hull figure (services/packs eat into it, so it rises when uninstalled); 0 = unknown (no CarrierStats yet), which disables the fit checks below.
+        self.carrier_capacity: int = 0
 
-        # Watermark: the newest journal timestamp already folded into this state.
-        # CargoTransfer is delta-based (not idempotent), so on restart we must
-        # NOT re-apply transfers that were already counted into the persisted
-        # carrier_cargo. ``_loaded_event_time`` is frozen at load time and gates
-        # replayed transfers; ``last_event_time`` advances as new events arrive
-        # and is what gets persisted for next launch.
+        # Watermark: newest journal timestamp already folded into this state; CargoTransfer is delta-based, so ``_loaded_event_time`` (frozen at load) gates replayed transfers from double-counting, while ``last_event_time`` advances and is persisted for next launch.
         self.last_event_time: str = ""
         self._loaded_event_time: str = ""
 
@@ -255,8 +211,7 @@ class AppState:
     def apply_event(self, event: dict[str, Any]) -> bool:
         """Apply one journal event. Returns True if state changed."""
         etype = event.get("event")
-        # Advance the persisted watermark. ISO-8601 UTC timestamps sort
-        # lexicographically, so a plain string comparison finds the newest.
+        # Advance the persisted watermark; ISO-8601 UTC timestamps sort lexicographically, so a string compare finds the newest.
         ts = event.get("timestamp")
         if isinstance(ts, str) and ts > self.last_event_time:
             self.last_event_time = ts
@@ -271,13 +226,10 @@ class AppState:
         if etype in ("FSDJump", "CarrierJump", "Location"):
             return self._apply_location(event)
         if etype == "Cargo":
-            # Cargo events describe whichever vessel you're currently in;
-            # boarding an SRV must not wipe the tracked ship hold.
+            # Cargo events describe whichever vessel you're in; boarding an SRV must not wipe the tracked ship hold.
             if (event.get("Vessel") or "Ship") != "Ship":
                 return False
-            # Inline inventory is sometimes present; otherwise the engine reloads
-            # Cargo.json separately. An empty list is still an inventory: it
-            # means the hold is now empty.
+            # Inline inventory is sometimes present, else the engine reloads Cargo.json; an empty list is still an inventory (the hold is now empty).
             inv = event.get("Inventory")
             if inv is None:
                 return False
@@ -290,14 +242,8 @@ class AppState:
         return False
 
     def _apply_cargo_transfer(self, event: dict[str, Any]) -> bool:
-        """Track fleet-carrier cargo from ship<->carrier transfer deltas.
-
-        Direction is relative to the destination: ``tocarrier`` adds to the
-        carrier, ``toship`` removes from it; ``tosrv`` is the SRV and ignored.
-        """
-        # Skip transfers already folded into the persisted carrier snapshot.
-        # Without this, replaying journal history on startup would re-apply old
-        # deltas on top of the loaded amounts and inflate the carrier totals.
+        """Track fleet-carrier cargo from ship<->carrier transfer deltas: ``tocarrier`` adds, ``toship`` removes, ``tosrv`` ignored; a ``tocarrier`` is credited only as far as the carrier has room, since the game journals every *requested* transfer including full-carrier refusals (arriving in bursts as the player re-clicks) that never left the ship."""
+        # Skip transfers already folded into the persisted carrier snapshot, else startup replay re-applies old deltas on top and inflates the totals.
         ts = event.get("timestamp", "")
         if ts and self._loaded_event_time and ts <= self._loaded_event_time:
             return False
@@ -309,7 +255,11 @@ class AppState:
             if not key or not count:
                 continue
             if direction == "tocarrier":
+                count = self._accepted_by_carrier(count)
+                if not count:
+                    continue
                 self.carrier_cargo[key] = self.carrier_cargo.get(key, 0) + count
+                self.carrier_total += count
                 changed = True
             elif direction == "toship":
                 remaining = self.carrier_cargo.get(key, 0) - count
@@ -317,21 +267,34 @@ class AppState:
                     self.carrier_cargo[key] = remaining
                 else:
                     self.carrier_cargo.pop(key, None)
+                self.carrier_total = max(0, self.carrier_total - count)
                 changed = True
         return changed
 
+    def _accepted_by_carrier(self, count: int) -> int:
+        """How much of a ``count`` t transfer the carrier still has room for; accepts the lot while capacity is unknown (no CarrierStats to check against, and dropping real transfers beats the over-count this guards)."""
+        if not self.carrier_capacity:
+            return count
+        return max(0, min(count, self.carrier_capacity - self.carrier_total))
+
     def _apply_carrier_stats(self, event: dict[str, Any]) -> bool:
-        """Capture carrier identity and authoritative total cargo tonnage."""
+        """Capture carrier identity, tonnage aboard and usable cargo capacity; the authoritative re-base where the game's numbers win over whatever the transfer deltas made of them since the last snapshot."""
         changed = False
         name = event.get("Name", "") or ""
         callsign = event.get("Callsign", "") or ""
-        total = int((event.get("SpaceUsage") or {}).get("Cargo", 0) or 0)
+        usage = event.get("SpaceUsage") or {}
+        total = int(usage.get("Cargo", 0) or 0)
+        # Cargo + FreeSpace, not TotalCapacity (the hull figure counts services/packs that can't hold cargo); without FreeSpace, keep the last known capacity, since Cargo alone would read as "full" and refuse every transfer.
+        free = usage.get("FreeSpace")
+        capacity = total + int(free or 0) if free is not None else self.carrier_capacity
         if name and name != self.carrier_name:
             self.carrier_name, changed = name, True
         if callsign and callsign != self.carrier_callsign:
             self.carrier_callsign, changed = callsign, True
         if total != self.carrier_total:
             self.carrier_total, changed = total, True
+        if capacity != self.carrier_capacity:
+            self.carrier_capacity, changed = capacity, True
         return changed
 
     def set_carrier_amount(self, key: str, amount: int) -> None:
@@ -344,17 +307,14 @@ class AppState:
     def carrier_tracked_total(self) -> int:
         return sum(self.carrier_cargo.values())
 
-    def finish_replay(self) -> None:
-        """Release the replay gate once journal history has been replayed.
+    def carrier_free_space(self) -> int:
+        """Tons the carrier can still take, or 0 while capacity is unknown."""
+        if not self.carrier_capacity:
+            return 0
+        return max(0, self.carrier_capacity - self.carrier_total)
 
-        During replay, CargoTransfer deltas at/before the loaded watermark are
-        skipped so persisted carrier amounts aren't double-counted. Events that
-        arrive after replay come from tailing freshly written journal bytes and
-        are never duplicates, so the gate is cleared entirely. (Keeping a
-        timestamp cutoff here would silently drop a live transfer landing in
-        the same second the replay ended: journal timestamps have 1 s
-        resolution.)
-        """
+    def finish_replay(self) -> None:
+        """Release the replay gate once history is replayed; replay skips CargoTransfer deltas at/before the loaded watermark to avoid double-counting, but post-replay events tail fresh bytes and are never duplicates, so the gate clears entirely (a timestamp cutoff would drop a live transfer in the same 1 s-resolution second replay ended)."""
         self._loaded_event_time = ""
 
     def _set_docked(self, market_id: int | None) -> bool:
@@ -390,12 +350,7 @@ class AppState:
         return changed
 
     def _apply_location(self, event: dict[str, Any]) -> bool:
-        """Track the player's current system and coordinates.
-
-        FSDJump/CarrierJump/Location all carry ``StarSystem`` and ``StarPos``.
-        This is the reference point used by the nearest-stations search; docking
-        is no longer required to know where you are.
-        """
+        """Track the player's current system and coordinates from FSDJump/CarrierJump/Location (all carry ``StarSystem``/``StarPos``); the reference point for the nearest-stations search, so docking isn't required to know where you are."""
         changed = False
         system = event.get("StarSystem", "") or ""
         if system and system != self.current_system:
@@ -405,9 +360,7 @@ class AppState:
             coords = (float(pos[0]), float(pos[1]), float(pos[2]))
             if coords != self.current_coords:
                 self.current_coords, changed = coords, True
-        # Location/CarrierJump carry a Docked flag (with the MarketID when
-        # docked); FSDJump has none and can only happen in flight. Either way
-        # this re-anchors the docked state after a session restart.
+        # Location/CarrierJump carry a Docked flag (+ MarketID when docked); FSDJump has none (flight only); either way this re-anchors docked state after a session restart.
         docked_mid = event.get("MarketID") if event.get("Docked") else None
         changed = self._set_docked(docked_mid) or changed
         return changed
@@ -455,11 +408,7 @@ class AppState:
         return True
 
     def _apply_contribution(self, event: dict[str, Any]) -> bool:
-        """Optimistically bump provided amounts when a delivery is logged.
-
-        The next depot refresh overwrites these with authoritative values; this
-        just keeps the overlay responsive the instant you hand cargo over.
-        """
+        """Optimistically bump provided amounts when a delivery is logged; the next depot refresh overwrites them authoritatively, this just keeps the overlay responsive the instant you hand cargo over."""
         mid = event.get("MarketID")
         proj = self.projects.get(mid) if mid is not None else None
         if proj is None:
@@ -477,12 +426,7 @@ class AppState:
         return changed
 
     def remove_project(self, market_id: int) -> bool:
-        """Forget a project (finished, failed, or abandoned).
-
-        A tombstone at the current watermark stops replayed journal history
-        from re-adding it; docking at the site again writes a newer depot
-        event, which clears the tombstone and brings the project back.
-        """
+        """Forget a project (finished, failed, or abandoned); a tombstone at the current watermark stops replay from re-adding it, and docking again (a newer depot event) clears it and brings the project back."""
         existed = self.projects.pop(market_id, None) is not None
         self._station_names.pop(market_id, None)
         if existed and self.last_event_time:
@@ -502,11 +446,7 @@ class AppState:
         self.cargo = new_cargo
 
     def set_market(self, data: dict[str, Any]) -> None:
-        """Replace the station-market snapshot from a Market.json dict.
-
-        Keeps the market id and the commodities actually in stock there
-        (Stock > 0); items a station merely buys don't count as available.
-        """
+        """Replace the station-market snapshot from a Market.json dict; keeps the market id and commodities actually in stock (Stock > 0), not items the station merely buys."""
         stock: set[str] = set()
         for item in data.get("Items") or []:
             key = register_display_name(item.get("Name"), item.get("Name_Localised"))
@@ -523,12 +463,7 @@ class AppState:
     #  queries
 
     def docked_station_stock(self) -> set[str]:
-        """Commodity keys in stock at the station we're docked at right now.
-
-        Empty while in flight, and also while the Market.json snapshot still
-        describes some previously visited market (it only updates when the
-        commodities market is opened).
-        """
+        """Commodity keys in stock at the station we're docked at now; empty in flight, and while the Market.json snapshot still describes a previously visited market (it updates only when the commodities market is opened)."""
         if self.docked_market_id is None or self._market_id != self.docked_market_id:
             return set()
         return self._market_stock
@@ -536,45 +471,27 @@ class AppState:
 
     def project_list(self) -> list[Project]:
         """Projects ordered: active first, then completed/failed, newest first."""
-        # Stable sort: order by timestamp descending, then group by status. The
-        # second sort preserves newest-first order within each status group.
+        # Stable sort: timestamp desc, then group by status (the second sort preserves newest-first within each group).
         projs = sorted(self.projects.values(), key=lambda p: p.updated, reverse=True)
         projs.sort(key=lambda p: 2 if p.failed else (1 if p.complete else 0))
         return projs
-
-    def current_project(self) -> Project | None:
-        if self.current_market_id is not None:
-            return self.projects.get(self.current_market_id)
-        return None
 
     def active_projects(self) -> list[Project]:
         """Projects that still count toward outstanding needs (not failed)."""
         return [p for p in self.project_list() if not p.failed]
 
     def outstanding_needs(self) -> dict[str, int]:
-        """Commodities still to acquire across all active constructions.
-
-        Maps commodity display name -> tons still short (remaining minus what's
-        already in the ship hold and staged on the carrier), aggregated over
-        every non-failed project. Only commodities with a positive shortfall are
-        included; this is the input to the nearest-stations search.
-        """
+        """Commodities still to acquire across all active constructions: display name -> tons short (remaining minus ship hold and carrier), aggregated over every non-failed project, positive shortfalls only; the input to the nearest-stations search."""
         needs: dict[str, int] = {}
         for row in self.combined_project().rows(self.cargo, self.carrier_cargo):
-            # row.short only subtracts the ship hold (it's the ship-centric
-            # "Short" column); carrier stock also counts as already acquired.
+            # row.short subtracts only the ship hold (the ship-centric "Short" column); carrier stock also counts as already acquired.
             short = row.short - row.on_carrier
             if short > 0:
                 needs[row.name] = needs.get(row.name, 0) + short
         return needs
 
     def combined_project(self) -> Project:
-        """A synthetic project aggregating every non-failed construction's needs.
-
-        Required/provided amounts are summed per commodity, so the resulting
-        rows show the total still needed across all your constructions, joined
-        against your (shared) cargo hold just like a normal project.
-        """
+        """A synthetic project aggregating every non-failed construction's needs; required/provided are summed per commodity so rows show the total still needed across all constructions, joined against the shared cargo hold like a normal project."""
         combined = Project(
             market_id=COMBINED_MARKET_ID, station_name="All constructions"
         )
@@ -604,10 +521,9 @@ class AppState:
             "carrier_name": self.carrier_name,
             "carrier_callsign": self.carrier_callsign,
             "carrier_total": self.carrier_total,
+            "carrier_capacity": self.carrier_capacity,
             "last_event_time": self.last_event_time,
-            # Display names are learned from live journal events only; persist
-            # them so names (and Spansh queries) stay correct once the journals
-            # that taught us them are gone.
+            # Display names are learned from live journal events only; persist them so names (and Spansh queries) stay correct once those journals are gone.
             "display_names": registry_snapshot(),
             "removed_projects": {
                 str(mid): ts for mid, ts in self._removed.items()
@@ -623,12 +539,12 @@ class AppState:
                     "updated": p.updated,
                     "lines": [
                         {
-                            "key": l.key,
-                            "required": l.required,
-                            "provided": l.provided,
-                            "payment": l.payment,
+                            "key": line.key,
+                            "required": line.required,
+                            "provided": line.provided,
+                            "payment": line.payment,
                         }
-                        for l in p.lines.values()
+                        for line in p.lines.values()
                     ],
                 }
                 for p in self.projects.values()
@@ -636,12 +552,8 @@ class AppState:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "AppState":
-        """Rebuild state from a persisted dict, skipping malformed entries.
-
-        A single corrupt entry must not brick startup, so each section is
-        parsed defensively and dropped on error rather than raised.
-        """
+    def from_dict(cls, data: dict[str, Any]) -> AppState:
+        """Rebuild state from a persisted dict, skipping malformed entries; each section is parsed defensively and dropped on error so one corrupt entry can't brick startup."""
         state = cls()
         if not isinstance(data, dict):
             return state
@@ -667,6 +579,10 @@ class AppState:
             state.carrier_total = int(data.get("carrier_total", 0) or 0)
         except (TypeError, ValueError):
             state.carrier_total = 0
+        try:
+            state.carrier_capacity = int(data.get("carrier_capacity", 0) or 0)
+        except (TypeError, ValueError):
+            state.carrier_capacity = 0
         restore_registry(
             data.get("display_names")
             if isinstance(data.get("display_names"), dict)
@@ -679,23 +595,18 @@ class AppState:
                     state._removed[int(mid)] = str(ts)
                 except (TypeError, ValueError):
                     continue
-        # Freeze the loaded watermark so replayed CargoTransfer deltas that were
-        # already counted into carrier_cargo above are not applied a second time.
+        # Freeze the loaded watermark so replayed CargoTransfer deltas already counted into carrier_cargo above aren't applied twice.
         state.last_event_time = data.get("last_event_time", "") or ""
         if state.last_event_time:
             state._loaded_event_time = state.last_event_time
         elif state.carrier_cargo:
-            # Migrating a pre-watermark cache: we can't tell which transfers were
-            # already counted, so trust the persisted carrier snapshot and gate
-            # every replayed transfer. finish_replay() reopens the gate for live
-            # updates once history has been replayed.
+            # Migrating a pre-watermark cache: can't tell which transfers were counted, so trust the persisted snapshot and gate every replayed transfer (finish_replay() reopens the gate for live updates).
             state._loaded_event_time = _FUTURE_WATERMARK
         for pd in data.get("projects", []) or []:
             try:
                 proj = Project(
                     market_id=int(pd["market_id"]),
-                    # Cleaned again on load so token names persisted by older
-                    # versions heal without needing a re-dock.
+                    # Cleaned again on load so token names persisted by older versions heal without a re-dock.
                     station_name=clean_station_name(pd.get("station_name", "") or ""),
                     system_name=pd.get("system_name", ""),
                     progress=float(pd.get("progress", 0.0) or 0.0),

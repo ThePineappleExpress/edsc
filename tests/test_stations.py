@@ -1,5 +1,6 @@
 import io
 import json
+import zlib
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -19,7 +20,7 @@ def _station(name, system, distance, arrival, large, market, planetary=False,
         "has_large_pad": large,
         "is_planetary": planetary,
         "type": station_type,
-        "market_id": abs(hash(name)) % 1_000_000,
+        "market_id": zlib.crc32(name.encode()) % 1_000_000,
         "market_updated_at": "2026-07-01T00:00:00Z",
         "market": [
             {"commodity": c, "supply": s} for c, s in market.items()
@@ -63,6 +64,59 @@ def test_search_ranks_by_coverage_then_distance():
     assert beta.satisfaction == 0.5
 
 
+def test_nearest_sort_leads_with_distance_over_coverage():
+    with mock.patch.object(stations.urllib.request, "urlopen", _fake_urlopen):
+        results = stations.search_stations(
+            "Sol", ["Aluminium", "Steel"], sort="nearest"
+        )
+    # Beta (3 Ly, 1 match) now outranks Alpha (5 Ly, 2 matches).
+    assert [r.name for r in results] == ["Beta", "Alpha"]
+
+
+def test_fresh_sort_leads_with_market_recency():
+    stale = _station("Stale", "Sol", 1.0, 10, True, {"Aluminium": 5000})
+    stale["market_updated_at"] = "2020-01-01T00:00:00Z"
+    fresh = _station("Fresh", "Wolf 359", 9.0, 10, True, {"Aluminium": 5000})
+    fresh["market_updated_at"] = "2026-07-11T00:00:00Z"
+
+    @contextmanager
+    def fake(req, timeout=0):
+        yield io.BytesIO(json.dumps({"results": [stale, fresh]}).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        results = stations.search_stations("Sol", ["Aluminium"], sort="fresh")
+    # The most recently updated market leads regardless of distance.
+    assert [r.name for r in results] == ["Fresh", "Stale"]
+
+
+def test_range_ly_caps_the_search_radius_in_the_request():
+    seen: list[dict] = []
+
+    @contextmanager
+    def fake(req, timeout=0):
+        seen.append(json.loads(req.data.decode())["filters"])
+        yield io.BytesIO(json.dumps({"results": []}).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        stations.search_stations("Sol", ["Aluminium"], range_ly=150)
+    assert seen and all(
+        f.get("distance") == {"min": "0", "max": "150"} for f in seen
+    )
+
+
+def test_unlimited_range_sends_no_distance_filter():
+    seen: list[dict] = []
+
+    @contextmanager
+    def fake(req, timeout=0):
+        seen.append(json.loads(req.data.decode())["filters"])
+        yield io.BytesIO(json.dumps({"results": []}).encode())
+
+    with mock.patch.object(stations.urllib.request, "urlopen", fake):
+        stations.search_stations("Sol", ["Aluminium"], range_ly=0)
+    assert seen and all("distance" not in f for f in seen)
+
+
 def test_missing_lists_the_unstocked_needs():
     with mock.patch.object(stations.urllib.request, "urlopen", _fake_urlopen):
         results = stations.search_stations("Sol", ["Aluminium", "Steel"])
@@ -75,8 +129,7 @@ def test_demand_by_name_records_the_requested_tonnage():
     with mock.patch.object(stations.urllib.request, "urlopen", _fake_urlopen):
         results = stations.search_stations("Sol", {"Aluminium": 3000, "Steel": 500})
     alpha, beta = results
-    # Every result carries the full request so tooltips can show each
-    # commodity's stocked share; amount-less lists record 0.
+    # Every result carries the full request so tooltips can show each commodity's stocked share; amount-less lists record 0.
     assert alpha.demand_by_name == {"Aluminium": 3000, "Steel": 500}
     assert beta.demand_by_name == {"Aluminium": 3000, "Steel": 500}
 
@@ -127,8 +180,7 @@ def test_supply_must_cover_shortfall_when_amounts_given():
         results = stations.search_stations(
             "Sol", {"Steel": 5000, "Aluminium": 200}
         )
-    # Steel needs 5000 -> threshold is the 100 t floor; 40 t doesn't count.
-    # Aluminium needs 200 -> threshold 100; 500 t counts.
+    # Steel needs 5000 -> threshold is the 100 t floor, 40 t doesn't count; Aluminium needs 200 -> threshold 100, 500 t counts.
     assert results and results[0].matched == ["Aluminium"]
 
 
@@ -181,8 +233,7 @@ def test_planetary_excluded_when_toggled_off():
         results = stations.search_stations(
             "Sol", ["Steel"], include_planetary=False
         )
-    # Discovery always fills every category for reusable local filtering; the
-    # compatibility option only filters the returned pool.
+    # Discovery always fills every category for reusable local filtering; the compatibility option only filters the returned pool.
     categories = {
         frozenset(body["filters"]["type"]["value"]) for body in bodies
     }
@@ -195,8 +246,7 @@ def test_planetary_excluded_when_toggled_off():
 
 
 def test_planetary_type_quirk_excluded_when_planets_off():
-    """Spansh sometimes reports surface types with is_planetary false; the
-    planets toggle must catch them by type too."""
+    """Spansh sometimes reports surface types with is_planetary false; the planets toggle must catch them by type too."""
     quirky = _station("Ground", "Sol", 1.0, 10, True, {"Steel": 5000},
                       planetary=False, station_type="Planetary Outpost")
     orbital = _station("Orbit", "Sol", 2.0, 20, True, {"Steel": 5000})
@@ -218,8 +268,7 @@ def test_owner_is_faction_for_stations_and_vanity_name_for_carriers():
     port["controlling_minor_faction"] = "Sol Workers' Party"
     named = _station("T9Z-94L", "Sol", 1.0, 10, True, {"Steel": 5000},
                      station_type="Drake-Class Carrier")
-    # Spansh reports the placeholder faction "FleetCarrier" for carriers;
-    # the vanity name is the only real proprietor information it has.
+    # Spansh reports the placeholder faction "FleetCarrier" for carriers; the vanity name is the only real proprietor information it has.
     named["controlling_minor_faction"] = "FleetCarrier"
     named["carrier_name"] = "PEQUOD"
     bare = _station("B4R-E77", "Sol", 2.0, 10, True, {"Steel": 5000},
@@ -301,12 +350,7 @@ def test_search_always_fetches_each_category_explicitly():
 
 
 def test_one_stop_station_outranks_nearer_partial_stockists():
-    """A distant full-coverage station beats nearby partial ones.
-
-    Per-commodity pages only see the nearest stockists of each commodity; the
-    combined AND query surfaces the one-stop station even when it's hundreds
-    of light years (i.e. a carrier jump or two) away.
-    """
+    """A distant full-coverage station beats nearby partial ones: per-commodity pages only see the nearest stockists of each commodity, so the combined AND query surfaces the one-stop station even when it's hundreds of light years (a carrier jump or two) away."""
     near_steel = _station("Steelworks", "Near", 5.0, 10, True, {"Steel": 9000})
     near_alu = _station("Foundry", "Near", 6.0, 10, True, {"Aluminium": 9000})
     one_stop = _station("Everything", "Bubble", 420.0, 50, True,
@@ -352,12 +396,7 @@ def test_single_commodity_skips_combined_query():
 
 
 def test_carrier_saturated_page_still_finds_stations():
-    """A region where the nearest stockists are wall-to-wall carriers.
-
-    Fetching the nearest page and dropping carriers afterwards would discard
-    every candidate; pushing the type filter into the query lets Spansh skip
-    straight to the real stations further out.
-    """
+    """A region where the nearest stockists are wall-to-wall carriers: fetching the nearest page and dropping carriers afterwards would discard every candidate, so pushing the type filter into the query lets Spansh skip straight to the real stations further out."""
     carriers = [
         _station(f"K{i}X-{i}{i}Z", "Staging", 1.0 + i, 10, True, {"Steel": 9000},
                  station_type="Drake-Class Carrier")
@@ -382,7 +421,7 @@ def test_carrier_saturated_page_still_finds_stations():
 def test_every_commodity_is_queried_and_combined_optimisation_is_capped():
     """No needed item may disappear merely because the list exceeds the cap."""
     needed = {f"Commodity{i}": 1000 - i for i in range(stations.MAX_COMMODITIES + 2)}
-    market = {name: 5000 for name in needed}
+    market = dict.fromkeys(needed, 5000)
     st = _station("Omni", "Sol", 1.0, 10, True, market)
 
     queried = []
@@ -400,7 +439,7 @@ def test_every_commodity_is_queried_and_combined_optimisation_is_capped():
     singles = [q[0] for q in queried if len(q) == 1]
     combined = [q for q in queried if len(q) > 1]
     # Each commodity is discovered independently in all three categories.
-    assert Counter(singles) == Counter({name: 3 for name in needed})
+    assert Counter(singles) == Counter(dict.fromkeys(needed, 3))
     # Only the optional one-stop AND query is capped, once per category.
     assert len(combined) == 3
     assert all(len(query) == stations.MAX_COMMODITIES for query in combined)
@@ -460,8 +499,7 @@ def test_amountless_list_reports_full_coverage():
 
 
 def test_residual_demand_after_top_station():
-    """What a supplementary search should look for: tonnage the best station
-    can't supply, including commodities it doesn't stock at all."""
+    """What a supplementary search should look for: tonnage the best station can't supply, including commodities it doesn't stock at all."""
     st = _station("Top", "Sol", 1.0, 10, True,
                   {"Steel": 5000, "Aluminium": 40, "Copper": 0})
 
@@ -476,8 +514,7 @@ def test_residual_demand_after_top_station():
     # Supply is recorded per needed commodity, even below the match threshold.
     assert top.supply_by_name == {"Steel": 5000, "Aluminium": 40}
     residual = stations.residual_demand(needed, top)
-    # Steel is 3000 t short; Aluminium's 40 t covers the 30 needed; Copper
-    # isn't stocked at all.
+    # Steel is 3000 t short; Aluminium's 40 t covers the 30 needed; Copper isn't stocked at all.
     assert residual == {"Steel": 3000, "Copper": 100}
 
 
@@ -560,13 +597,13 @@ def test_results_are_capped_at_ten_per_category():
 
 
 def test_category_filters_add_to_the_orbital_baseline():
-    common = dict(
-        system="Sol",
-        distance_ly=1.0,
-        arrival_ls=10.0,
-        has_large_pad=True,
-        market_updated_at="2026-07-11T08:00:00Z",
-    )
+    common = {
+        "system": "Sol",
+        "distance_ly": 1.0,
+        "arrival_ls": 10.0,
+        "has_large_pad": True,
+        "market_updated_at": "2026-07-11T08:00:00Z",
+    }
     orbital = stations.StationResult(
         name="Orbit",
         is_planetary=False,
@@ -607,12 +644,12 @@ def test_category_filters_add_to_the_orbital_baseline():
 
 
 def test_mixed_result_cap_keeps_each_available_category_visible():
-    common = dict(
-        system="Sol",
-        arrival_ls=10.0,
-        has_large_pad=True,
-        market_updated_at="2026-07-11T08:00:00Z",
-    )
+    common = {
+        "system": "Sol",
+        "arrival_ls": 10.0,
+        "has_large_pad": True,
+        "market_updated_at": "2026-07-11T08:00:00Z",
+    }
     orbitals = [
         stations.StationResult(
             name=f"Orbit {index}",
@@ -652,14 +689,14 @@ def test_mixed_result_cap_keeps_each_available_category_visible():
 
 
 def test_supplementary_candidates_keep_planetary_and_carrier_alternatives():
-    common = dict(
-        system="Sol",
-        arrival_ls=10.0,
-        has_large_pad=True,
-        market_updated_at="2026-07-11T08:00:00Z",
-        needed_total=2,
-        demand_by_name={"Steel": 100, "Aluminium": 100},
-    )
+    common = {
+        "system": "Sol",
+        "arrival_ls": 10.0,
+        "has_large_pad": True,
+        "market_updated_at": "2026-07-11T08:00:00Z",
+        "needed_total": 2,
+        "demand_by_name": {"Steel": 100, "Aluminium": 100},
+    }
     primary = stations.StationResult(
         name="Orbit",
         distance_ly=1.0,
@@ -697,8 +734,7 @@ def test_supplementary_candidates_keep_planetary_and_carrier_alternatives():
     )
 
     assert candidates == [planetary, carrier]
-    # The greedy completeness plan may need only one stop; that must not alter
-    # which valid alternatives are offered in the supplementary table.
+    # The greedy completeness plan may need only one stop; that must not alter which valid alternatives are offered in the supplementary table.
     assert stations.supplementary_stations(
         [primary, planetary, carrier], needed, primary
     ) == [planetary]

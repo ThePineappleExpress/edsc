@@ -1,36 +1,6 @@
-"""Locate the Elite Dangerous journal directory across platforms.
+"""Locate Elite Dangerous journals across native and Proton installs."""
 
-Resolution order:
-
-1. Explicit override (``EDSC_JOURNAL_DIR`` env var, or a value passed in).
-2. Platform-native default location.
-3. On Linux, the game usually runs under Steam Proton, so we probe the Wine
-   prefix for AppID 359320 in both Flatpak and native Steam layouts, including
-   extra Steam library folders parsed from ``libraryfolders.vdf``.
-
-A directory only counts as a match if it actually contains at least one
-``Journal.*.log`` file (or, failing that, exists and looks like the right
-folder), so a stale/half-installed prefix does not win over a real one.
-
-
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-
-"""
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
@@ -61,8 +31,8 @@ def _steam_roots() -> list[Path]:
         return [
             Path(base) / "Steam"
             for base in (
-                os.environ.get("ProgramFiles(x86)"),
-                os.environ.get("ProgramFiles"),
+                os.environ.get("PROGRAMFILES(X86)"),
+                os.environ.get("PROGRAMFILES"),
             )
             if base
         ]
@@ -133,11 +103,7 @@ def platform_candidates() -> list[Path]:
 
 
 def find_journal_dir(override: str | os.PathLike[str] | None = None) -> Path | None:
-    """Return the best journal directory, or ``None`` if none is found.
-
-    ``override`` (or ``$EDSC_JOURNAL_DIR``) takes precedence and is returned as
-    long as it exists, even if empty -- an explicit choice is always honoured.
-    """
+    """Return the best journal directory, or ``None`` if none is found; ``override`` (or ``$EDSC_JOURNAL_DIR``) takes precedence and is returned as long as it exists, even if empty -- an explicit choice is always honoured."""
     override = override or os.environ.get("EDSC_JOURNAL_DIR")
     if override:
         p = Path(override).expanduser()

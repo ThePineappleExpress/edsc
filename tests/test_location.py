@@ -1,6 +1,5 @@
 from edsc.model import AppState
 
-
 FSD_JUMP = {
     "event": "FSDJump",
     "StarSystem": "Pleiades Sector PD-S b4-1",

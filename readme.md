@@ -127,6 +127,49 @@ commodities a station stocks and how fresh its market data is.
 This is EDSC's **only** network feature; everything else works entirely from
 local journal files.
 
+## Controller bindings
+
+EDSC captures controller input globally, so configured shortcuts work while the
+game has focus. Open **Settings → Controls**, select a device, then choose
+**Bind** beside an action and press a controller button or move a hat. Use
+**Clear** to remove it and **Rescan** to retry detection immediately. The chosen
+device is remembered across restarts and disconnects; EDSC never silently moves
+its bindings to a different connected controller.
+
+The initial action set is deliberately small:
+
+- previous / next overlay tab;
+- collapse / expand the overlay;
+- toggle between full opacity and the currently applicable configured opacity;
+- refresh the active Stations or Colonize search (ignored on other tabs and
+  while a search is already running).
+
+Only button presses and exact non-centred hat directions can be bound. Button
+releases, centred hats, device initial-state reports, axes, and trackballs never
+invoke actions, avoiding accidental triggers from analog drift. Assigning the
+same physical control to another action moves the binding rather than firing two
+actions at once.
+
+Raw controller diagnostics are developer-only. Start EDSC with `--dev` (for
+example, `edsc --dev`, or `EDSC_DEV=1 edsc` to set it through the environment
+instead) to expose the live tester below the binding editor. It shows centred
+axis gauges, button lamps, hat directions, trackball deltas, USB/device
+metadata, and the latest raw event. Development mode also prints a timestamped
+trace of every search to stderr -- requests, response shapes, and per-stage
+timings. Use `EDSC_TRACE=1` for that trace on its own, without the tester.
+
+- **Windows** uses SDL2 and currently opens **VKB devices only** (USB vendor ID
+  `0x231d`, with a VKB-name fallback for older DirectInput drivers). SDL2 and its
+  native runtime are installed automatically.
+- **Linux** reads the kernel joystick interface at `/dev/input/js*` directly.
+  It has no SDL or controller-library dependency and accepts any joystick that
+  exposes a `js` device node.
+
+On Linux, the user running EDSC must be able to read the relevant
+`/dev/input/js*` node. Distribution defaults usually grant this through the
+active desktop session; if not, adjust the device's udev rule or input-group
+permissions rather than running EDSC as root.
+
 ## Fleet carrier column
 
 Elite Dangerous **does not** expose an itemised fleet-carrier inventory to third
@@ -219,6 +262,10 @@ to show/hide, or right-click for Settings / Quit.
 
 The overlay's **height auto-fits the number of commodities** in the list (long
 lists scroll once they'd run off-screen); drag the corner grip to set the width.
+Enable **Automatic opacity change on dock** in Settings to use a separate
+**Docked opacity** while docked; the normal overlay opacity returns on undock.
+Enable **Expand overlay on dock and collapse on liftoff** to automatically show
+the full overlay at stations and reduce it to the floating icon while flying.
 
 ### Focus-aware click-through
 
@@ -239,7 +286,16 @@ click-through.
 
 - ▲ **Pin** - keep the overlay above other windows
 - ▨ **Auto click-through** - pass the mouse through while the game is focused
-- ⚙ **Settings** - journal folder, opacity, font, auto-height, game matchers
+- ⚙ **Settings** - journal folder, normal/docked opacity, automatic docking
+  collapse, font, auto-height,
+  game matchers
+- ▣ **Collapse** - shrink the overlay to a small floating icon (tinted to your
+  HUD colours); click the icon to bring the overlay back, or drag it anywhere -
+  it remembers its spot. **`Ctrl+Shift+↓`** toggles the collapse from in-game
+  too, via the same global hotkey mechanism as the tab combos. The transition
+  fades the content, folds the panel vertically and then horizontally into a
+  square, and cross-fades to the icon. The hidden overlay stays live and keeps
+  receiving state updates; it is not reconstructed when restored.
 - **-** **Hide** - hide to the tray
 
 ### Display mode (important for always-on-top)
@@ -329,6 +385,7 @@ pytest                              # headless unit tests (no display needed)
 edsc/
   commodities.py     canonical name normalisation ($aluminium_name; ↔ aluminium)
   config.py          persisted user settings
+  controller_bindings.py  discrete binding model, validation, and event matching
   paths.py           per-OS config/state directories
   model.py           Project / Commodity / AppState merge logic (pure, tested)
   core.py            journal-dir resolution, state bootstrap, persistence
@@ -339,11 +396,15 @@ edsc/
     locator.py       cross-platform journal-folder discovery
     watcher.py       poll-based tailer (rollover-safe) + Cargo.json watch
   platform/
+    controller.py     shared raw controller devices/events and Qt signal facade
+    controller_linux.py  zero-dependency /dev/input/js* capture and hotplug
+    controller_sdl2.py   global SDL2 capture for VKB devices on Windows
     foreground.py    which window is focused (X11/XWayland + Windows backends)
     clickthrough.py  true mouse pass-through (X11 input-shape / Win32 ex-style)
     topmost.py       re-assert keep-above when the game grabs focus (X11/Win32)
     hotkeys.py       global X11 hotkeys (XGrabKey) pumped via QSocketNotifier
   gui/
+    controller_tester.py  device picker, binding editor, and dev-only visualizer
     overlay.py       the translucent always-on-top overlay window
     table_model.py   commodity + station table models with HUD colour coding
     carrier_dialog.py  manual correction of tracked fleet-carrier amounts

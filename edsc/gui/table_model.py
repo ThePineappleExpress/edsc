@@ -1,34 +1,22 @@
-"""Qt table model presenting a project's commodities.
+"""Qt models for commodity, station, and colonization tables."""
 
+# SPDX-License-Identifier: GPL-3.0-or-later
 
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-
-"""
 from __future__ import annotations
 
-from html import escape
-from datetime import datetime, timedelta, timezone
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtGui import QColor
 
 from ..model import CommodityRow
-from ..stations import StationResult
+from ..station_planning import StationResult
+from ..systems import SystemResult
+from ..time_utils import parse_timestamp
 from . import icons, theme
+from .tooltips import (
+    format_ls as _format_ls,
+    station_tooltip as _station_tooltip,
+    system_tooltip as _system_tooltip,
+)
 
 COLUMNS = ["Commodity", "Need", "Hold", "Carrier", "Done", "Short"]
 _NUMERIC_COLS = {1, 2, 3, 4, 5}
@@ -36,6 +24,8 @@ _NAME_COL = 0
 _HOLD_COL = 2
 _CARRIER_COL = 3
 _SHORT_COL = 5
+_ROOT_INDEX = QModelIndex()
+formatted_date = parse_timestamp
 
 
 class CommodityTableModel(QAbstractTableModel):
@@ -46,19 +36,13 @@ class CommodityTableModel(QAbstractTableModel):
         self._hide_completed = False
         self._mono = theme.monospace_font()
 
-    #  data feed
-
     def set_rows(self, rows: list[CommodityRow]) -> None:
         self.beginResetModel()
         self._rows = [r for r in rows if not (self._hide_completed and r.done)]
         self.endResetModel()
 
     def set_station_stock(self, keys: set[str]) -> None:
-        """Commodities in stock at the currently docked station.
-
-        Their names are highlighted so you can see at a glance what can be
-        bought without leaving the pad.
-        """
+        """Commodities in stock at the currently docked station; their names are highlighted so you can see at a glance what can be bought without leaving the pad."""
         if keys == self._station_stock:
             return
         self._station_stock = set(keys)
@@ -75,12 +59,10 @@ class CommodityTableModel(QAbstractTableModel):
     def row_at(self, row: int) -> CommodityRow | None:
         return self._rows[row] if 0 <= row < len(self._rows) else None
 
-    #  Qt model interface
-
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def rowCount(self, parent: QModelIndex = _ROOT_INDEX) -> int:
         return 0 if parent.isValid() else len(self._rows)
 
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def columnCount(self, parent: QModelIndex = _ROOT_INDEX) -> int:
         return 0 if parent.isValid() else len(COLUMNS)
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
@@ -153,8 +135,6 @@ class StationTableModel(QAbstractTableModel):
         self._rows: list[StationResult] = []
         self._mono = theme.monospace_font()
 
-    #  data feed 
-
     def set_rows(self, rows: list[StationResult]) -> None:
         self.beginResetModel()
         self._rows = list(rows)
@@ -163,12 +143,10 @@ class StationTableModel(QAbstractTableModel):
     def row_at(self, row: int) -> StationResult | None:
         return self._rows[row] if 0 <= row < len(self._rows) else None
 
-    #  Qt model interface
-
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def rowCount(self, parent: QModelIndex = _ROOT_INDEX) -> int:
         return 0 if parent.isValid() else len(self._rows)
 
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def columnCount(self, parent: QModelIndex = _ROOT_INDEX) -> int:
         return 0 if parent.isValid() else len(STATION_COLUMNS)
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
@@ -185,8 +163,7 @@ class StationTableModel(QAbstractTableModel):
         col = index.column()
 
         if role == Qt.DisplayRole:
-            # A carrier's vanity name joins the callsign, as on the tooltip's
-            # title line (the game presents them as one name).
+            # A carrier's vanity name joins the callsign, as on the tooltip's title line (the game presents them as one name).
             name = s.name
             if s.is_carrier and s.owner:
                 name = f"{name} · {s.owner}"
@@ -227,101 +204,109 @@ class StationTableModel(QAbstractTableModel):
         return theme.ORANGE
 
 
-def formatted_date(date: str) -> datetime | None:
-    """Parse a Spansh ISO-8601 date, or return ``None`` if it is unusable."""
-    if not isinstance(date, str) or not date.strip():
+# Colonization candidates; Spansh data can be missing per field (unscanned systems), so every unknown renders as a dimmed "?" instead of a guess.
+SYSTEM_COLUMNS = ["System", "Ly", "Steps", "Stars", "Bodies", "Furthest", "Agent"]
+SY_SYSTEM_COL = 0  # clicking this column copies the system name (see overlay)
+SY_DIST_COL = 1
+SY_STEPS_COL = 2
+SY_STARS_COL = 3
+SY_BODIES_COL = 4
+SY_FURTHEST_COL = 5
+SY_AGENT_COL = 6
+_SY_NUMERIC_COLS = {
+    SY_DIST_COL, SY_STEPS_COL, SY_STARS_COL, SY_BODIES_COL, SY_FURTHEST_COL,
+}
+_UNKNOWN = "?"
+
+
+class SystemTableModel(QAbstractTableModel):
+    """Presents ranked colonization candidates from the Spansh search."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._rows: list[SystemResult] = []
+        self._mono = theme.monospace_font()
+
+    def set_rows(self, rows: list[SystemResult]) -> None:
+        self.beginResetModel()
+        self._rows = list(rows)
+        self.endResetModel()
+
+    def row_at(self, row: int) -> SystemResult | None:
+        return self._rows[row] if 0 <= row < len(self._rows) else None
+
+    def rowCount(self, parent: QModelIndex = _ROOT_INDEX) -> int:
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent: QModelIndex = _ROOT_INDEX) -> int:
+        return 0 if parent.isValid() else len(SYSTEM_COLUMNS)
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role != Qt.DisplayRole:
+            return None
+        if orientation == Qt.Horizontal:
+            return SYSTEM_COLUMNS[section]
         return None
-    value = date.strip()
-    # Python 3.10's fromisoformat() does not accept the UTC ``Z`` suffix.
-    if value.endswith("Z"):
-        value = f"{value[:-1]}+00:00"
-    # Spansh also emits short offsets such as ``+00``; normalize those to
-    # the form accepted consistently across all supported Python versions.
-    elif ("T" in value or " " in value) and value[-3:-2] in ("+", "-"):
-        if value[-2:].isdigit():
-            value = f"{value}:00"
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
+
+    def data(self, index: QModelIndex, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        s = self._rows[index.row()]
+        col = index.column()
+
+        if role == Qt.DisplayRole:
+            return self._display(s, col)
+
+        if role == Qt.ToolTipRole:
+            return _system_tooltip(s, copy_hint=col == SY_SYSTEM_COL)
+
+        if role == Qt.TextAlignmentRole and col in _SY_NUMERIC_COLS:
+            return int(Qt.AlignRight | Qt.AlignVCenter)
+
+        if role == Qt.FontRole and col in _SY_NUMERIC_COLS:
+            return self._mono
+
+        if role == Qt.ForegroundRole:
+            return self._foreground(s, col)
+
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
+    @staticmethod
+    def _display(s: SystemResult, col: int) -> str:
+        if col == SY_AGENT_COL:
+            if s.agent is not None:
+                return f"{s.agent.name} · {s.agent.distance_ly:,.1f} Ly"
+            return _UNKNOWN if s.agent_error else "none"
+        return (
+            s.name or _UNKNOWN,
+            f"{s.distance_ly:,.1f}" if s.distance_ly is not None else _UNKNOWN,
+            str(s.steps) if s.steps is not None else _UNKNOWN,
+            str(s.star_count) if s.star_count is not None else _UNKNOWN,
+            (
+                f"{s.known_body_count:,}"
+                if s.known_body_count is not None
+                else _UNKNOWN
+            ),
+            _format_ls(s.furthest_ls) if s.furthest_ls is not None else _UNKNOWN,
+        )[col]
 
-def _station_tooltip(s: StationResult, copy_hint: bool) -> str:
-    """Rich-text station tooltip: the identity header with the type sprite and
-    market freshness, then the needed commodities as coloured stocked/missing
-    lists with each entry's stocked share of the requirement.
-    """
-    kind = "Planetary" if s.is_planetary else "Carrier" if s.is_carrier else "Orbital"
-
-    def entry(name: str) -> tuple[str, str, bool]:
-        demand = s.demand_by_name.get(name, 0)
-        if demand <= 0:  # amount-less search: no percentage to show
-            return escape(name), "", True
-        stocked = min(100, round(100 * s.supply_by_name.get(name, 0) / demand))
-        return escape(name), f"{stocked}%", stocked >= 100
-
-    stock = [entry(n) for n in sorted(s.matched)]
-    missing = [escape(n) for n in sorted(s.missing)]
-    hint = "<br>Click to copy the system name" if copy_hint else ""
-    # Calculate time elapsed from market update to now
-    updated_at = formatted_date(s.market_updated_at)
-    freshness = datetime.now(timezone.utc) - updated_at if updated_at else None
-    def _elapsed(freshness: timedelta) -> str:
-        """Return a human-readable string for the elapsed time."""
-        if freshness is None:
-            return "unknown"
-        days = freshness.days
-        seconds = freshness.seconds
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-        if days >= 365:
-            years = days // 365
-            return f"{years} year{'s' if years != 1 else ''}"
-        elif days >= 60:
-            months = days // 30
-            return f"{months} month{'s' if months != 1 else ''}"
-        elif days >= 30:
-            return "1 month"
-        elif days >= 7:
-            weeks = days // 7
-            return f"{weeks} week{'s' if weeks != 1 else ''}"
-        elif days > 0:
-            return f"{days} day{'s' if days != 1 else ''}"
-        elif hours > 0:
-            return f"{hours} hour{'s' if hours != 1 else ''}"
-        elif minutes > 0:
-            return f"{minutes} minute{'s' if minutes != 1 else ''}"
-        else:
-            return "just now"
-    freshness_text = (
-        f"{_elapsed(freshness)} ago"
-        if freshness is not None
-        else "unknown"
-    )
-    # Stations get their controlling minor faction as a sub-line under the
-    # name; a carrier's vanity name joins the callsign on the title line
-    # instead (the game presents them as one name, and no owner Cmdr exists
-    # in community data to put below).
-    title, owner = escape(s.name), escape(s.owner)
-    if s.is_carrier and owner:
-        title, owner = f"{title} · {owner}", ""
-    header = theme.tooltip_station_header(
-        icons.station_icon_html(s, theme.tooltip_icon_px()),
-        title,
-        f"Market data from: {escape(freshness_text)}",
-        escape(s.system),
-        f"{kind} · {escape(s.station_type or 'Station')}",
-        owner=owner,
-    )
-    return f"{header}{theme.tooltip_stock_table(stock, missing)}{hint}"
-
-
-def _format_ls(ls: float) -> str:
-    """Compact supercruise arrival distance, e.g. 146, 2.3k, 58k Ls."""
-    if ls >= 1000:
-        return f"{ls / 1000:,.1f}k"
-    return f"{ls:,.0f}"
+    def _foreground(self, s: SystemResult, col: int) -> QColor:
+        # Unconfirmed by Raven Colonial: render the whole row dimmed so a hypothetical (Spansh-only) candidate reads as such at a glance; only a definitive "not found" dims, an unchecked/errored row (None) keeps the normal rich colouring below.
+        if s.verified is False:
+            if self._display(s, col) == _UNKNOWN:
+                return theme.TEXT_DIM
+            return theme.ORANGE_DIM
+        if col == SY_STEPS_COL and s.steps is not None:
+            if s.steps == 1:
+                return theme.DONE  # claim range of populated space right now
+            if s.steps <= 3:
+                return theme.READY
+            return theme.ORANGE
+        if col == SY_AGENT_COL:
+            if s.agent_error:
+                return theme.TEXT_DIM
+            return theme.DONE if s.claimable else theme.SHORT
+        if self._display(s, col) == _UNKNOWN:
+            return theme.TEXT_DIM
+        return theme.ORANGE
 

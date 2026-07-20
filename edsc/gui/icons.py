@@ -1,31 +1,13 @@
-"""Station-type icons cut from the sprite map and tinted to the HUD colour.
+"""Render HUD-tinted station, service, and application icons."""
 
-
-    EDSC - Colonization commodities tracker
-    Copyright (C) 2026  ThePineappleExpress
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-
-"""
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRect
-from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRect, QSize, Qt
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 
 from ..paths import asset_path
 from . import theme
@@ -33,8 +15,7 @@ from . import theme
 if TYPE_CHECKING:
     from ..stations import StationResult
 
-# Cell (row, column) of each sprite in assets/icon_map.png, a 3x3 grid of
-# white-on-transparent glyphs; the last two cells are unused.
+# Cell (row, column) of each sprite in assets/icon_map.png, a 3x3 grid of white-on-transparent glyphs; the final cell is unused.
 _CELLS = {
     "asteroid": (0, 0),
     "coriolis": (0, 1),
@@ -43,6 +24,7 @@ _CELLS = {
     "carrier": (1, 1),
     "planetary": (1, 2),
     "dodec": (2, 0),
+    "colonization": (2, 1),
 }
 _GRID = 3
 
@@ -51,6 +33,7 @@ _sheet: QImage | None = None
 _images: dict[tuple[str, int], QImage] = {}
 _icons: dict[tuple[str, int], QIcon] = {}
 _uris: dict[tuple[str, int], str] = {}
+_colonization_pixmaps: dict[tuple[int, int], QPixmap] = {}
 
 
 def sprite_key(station_type: str, *, is_carrier: bool, is_planetary: bool) -> str:
@@ -103,6 +86,96 @@ def station_icon(station: StationResult) -> QIcon:
         icon = QIcon(QPixmap.fromImage(_tinted(cache)))
         _icons[cache] = icon
     return icon
+
+
+def colonization_icon(px: int) -> QPixmap:
+    """HUD-tinted colonization sprite for construction-site UI elements."""
+    cache = (px, theme.ORANGE.rgba())
+    pixmap = _colonization_pixmaps.get(cache)
+    if pixmap is None:
+        pixmap = QPixmap.fromImage(_tinted(("colonization", cache[1]))).scaled(
+            px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        _colonization_pixmaps[cache] = pixmap
+    return pixmap
+
+
+_app_glyph_source: QImage | None = None
+_app_glyphs: dict[tuple, QPixmap] = {}
+
+# The emblem is deliberately mixed-media: orange-artwork lettering, grayscale ship/wings/outlines/rock; the source orange is strongly saturated (incl. antialiased edges), so a broad orange hue range cleanly separates accent from neutral art without baking in one exact shade.
+_APP_GLYPH_ACCENT_MIN_SATURATION = 128
+_APP_GLYPH_ACCENT_HUE_RANGE = range(66)
+
+
+def _is_app_glyph_accent(colour: QColor) -> bool:
+    return (
+        colour.hsvSaturation() >= _APP_GLYPH_ACCENT_MIN_SATURATION
+        and colour.hsvHue() in _APP_GLYPH_ACCENT_HUE_RANGE
+    )
+
+
+def app_glyph_pixmap(px: int, *, stock: bool = False) -> QPixmap:
+    """The app emblem at ``px``, selectively adjusted to the HUD colours; only the source's orange shades pass through the Elite HUD matrix, grayscale pixels copied verbatim (preserving white wings/ship, dark outlines, gray rock) instead of washing the whole emblem in the HUD accent. ``stock=True`` skips the matrix and returns the original Elite orange -- the About tab uses it to stay a homage regardless of the player's colours."""
+    global _app_glyph_source
+    key = (px, "stock" if stock else theme.current_hud_matrix())
+    pixmap = _app_glyphs.get(key)
+    if pixmap is None:
+        if _app_glyph_source is None:
+            _app_glyph_source = QImage(str(asset_path("icon.png")))
+        source = _app_glyph_source.scaled(
+            px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        image = source.convertToFormat(QImage.Format_ARGB32)
+        if not stock:
+            for y in range(image.height()):
+                for x in range(image.width()):
+                    colour = image.pixelColor(x, y)
+                    if colour.alpha() == 0 or not _is_app_glyph_accent(colour):
+                        continue
+                    rgb = theme.adjust_hud_rgb(
+                        (colour.red(), colour.green(), colour.blue())
+                    )
+                    image.setPixelColor(x, y, QColor(*rgb, colour.alpha()))
+        pixmap = QPixmap.fromImage(image)
+        _app_glyphs[key] = pixmap
+    return pixmap
+
+
+# "Powered by" service marks (EDDN, Spansh, Raven Colonial), shown in their own brand colours (EDDN green wordmark, Spansh red-jet disc, Raven purple hex) rather than HUD-tinted; a monochrome variant is a one-liner away in git history if the mixed palette reads too loud beside the emblem.
+_powered_pixmaps: dict[tuple[str, int, int], QPixmap] = {}
+_powered_uris: dict[tuple[str, int, int], str] = {}
+
+
+def powered_logo_pixmap(name: str, width: int, height: int) -> QPixmap:
+    """A community service logo scaled to fit ``width`` x ``height`` in its original colours (aspect preserved); see the module note above for the HUD-tinting alternative."""
+    key = (name, width, height)
+    pixmap = _powered_pixmaps.get(key)
+    if pixmap is None:
+        source = QImage(str(asset_path(f"powered_{name}.png")))
+        pixmap = QPixmap.fromImage(source).scaled(
+            QSize(width, height), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        _powered_pixmaps[key] = pixmap
+    return pixmap
+
+
+def powered_logo_html(name: str, width: int, height: int, *, alt: str = "") -> str:
+    """A bundled service mark as a fitted inline image for rich text; the raster is scaled before encoding (keeping tooltip payloads small) and the resulting ``width``/``height`` retain the source aspect ratio."""
+    key = (name, width, height)
+    pixmap = powered_logo_pixmap(*key)
+    uri = _powered_uris.get(key)
+    if uri is None:
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.WriteOnly)
+        pixmap.save(buffer, "PNG")
+        uri = "data:image/png;base64," + bytes(data.toBase64()).decode("ascii")
+        _powered_uris[key] = uri
+    return (
+        f"<img src='{uri}' width='{pixmap.width()}' height='{pixmap.height()}' "
+        f"alt='{alt}'>"
+    )
 
 
 def station_icon_html(station: StationResult, px: int) -> str:

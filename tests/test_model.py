@@ -1,6 +1,5 @@
 from edsc.model import COMBINED_MARKET_ID, AppState
 
-
 DEPOT = {
     "timestamp": "2026-07-06T16:13:10Z",
     "event": "ColonisationConstructionDepot",
@@ -210,6 +209,81 @@ def test_carrier_stats_captures_identity_and_total():
     assert state.carrier_total == 10150
 
 
+def test_carrier_capacity_excludes_space_taken_by_crew_services():
+    """Capacity is Cargo+FreeSpace, not the 25,000 t hull: services eat into it."""
+    state = AppState()
+    state.apply_event({"event": "CarrierStats", "Callsign": "VZV-45V", "SpaceUsage": {
+        "TotalCapacity": 25000, "Crew": 5900, "Cargo": 7851, "FreeSpace": 11249}})
+    assert state.carrier_capacity == 19100
+    assert state.carrier_free_space() == 11249
+
+
+def test_uninstalling_carrier_services_frees_capacity():
+    """The 5,900 t held by crew services returns to cargo capacity."""
+    state = AppState()
+    state.apply_event({"event": "CarrierStats", "Callsign": "VZV-45V", "SpaceUsage": {
+        "TotalCapacity": 25000, "Crew": 5900, "Cargo": 7851, "FreeSpace": 11249}})
+    assert state.carrier_capacity == 19100
+    # Services uninstalled: Crew drops to 0, FreeSpace absorbs it, cargo unmoved.
+    state.apply_event({"event": "CarrierStats", "Callsign": "VZV-45V", "SpaceUsage": {
+        "TotalCapacity": 25000, "Crew": 0, "Cargo": 7851, "FreeSpace": 17149}})
+    assert state.carrier_capacity == 25000
+    assert state.carrier_total == 7851
+
+
+def test_transfers_move_the_total_between_carrier_stats_snapshots():
+    """CarrierStats only fires when carrier management is opened; the tonnage aboard must not sit stale for days while transfers happen."""
+    state = AppState()
+    state.apply_event({"event": "CarrierStats", "SpaceUsage": {
+        "Cargo": 1000, "FreeSpace": 4000}})
+    state.apply_event({"event": "CargoTransfer", "Transfers": [
+        {"Type": "steel", "Count": 300, "Direction": "tocarrier"}]})
+    assert state.carrier_total == 1300
+    state.apply_event({"event": "CargoTransfer", "Transfers": [
+        {"Type": "steel", "Count": 100, "Direction": "toship"}]})
+    assert state.carrier_total == 1200
+    # A fresh snapshot is authoritative and re-bases the extrapolation.
+    state.apply_event({"event": "CarrierStats", "SpaceUsage": {
+        "Cargo": 900, "FreeSpace": 4100}})
+    assert state.carrier_total == 900
+
+
+def test_transfers_a_full_carrier_cannot_accept_are_not_counted():
+    """The game journals every transfer the player *requests*, including ones it silently refuses because the carrier is full -- and a player whose transfer isn't going through clicks again, so refusals arrive in bursts."""
+    state = AppState()
+    state.apply_event({"event": "CarrierStats", "SpaceUsage": {
+        "Cargo": 17862, "FreeSpace": 1238}})       # 19,100 t capacity
+    transfer = {"event": "CargoTransfer", "Transfers": [
+        {"Type": "cmmcomposite", "Count": 1238, "Direction": "tocarrier"}]}
+    state.apply_event(transfer)                    # fits exactly -> carrier full
+    assert state.carrier_cargo["cmmcomposite"] == 1238
+    assert state.carrier_total == 19100
+    # Repeat clicks against a full carrier must not credit phantom cargo.
+    for _ in range(6):
+        state.apply_event(transfer)
+    assert state.carrier_cargo["cmmcomposite"] == 1238
+    assert state.carrier_total == 19100
+    assert state.carrier_free_space() == 0
+
+
+def test_a_partly_fitting_transfer_is_credited_up_to_the_free_space():
+    state = AppState()
+    state.apply_event({"event": "CarrierStats", "SpaceUsage": {
+        "Cargo": 900, "FreeSpace": 100}})
+    state.apply_event({"event": "CargoTransfer", "Transfers": [
+        {"Type": "steel", "Count": 250, "Direction": "tocarrier"}]})
+    assert state.carrier_cargo["steel"] == 100     # only 100 t fitted
+    assert state.carrier_total == 1000
+
+
+def test_transfers_are_trusted_while_carrier_capacity_is_unknown():
+    """No CarrierStats yet: nothing to check against, so don't drop real cargo."""
+    state = AppState()
+    state.apply_event({"event": "CargoTransfer", "Transfers": [
+        {"Type": "steel", "Count": 5000, "Direction": "tocarrier"}]})
+    assert state.carrier_cargo["steel"] == 5000
+
+
 def test_rows_include_carrier_and_covered_by_stock():
     state = AppState()
     state.apply_event(_depot(1, [("steel", 100, 0)]))
@@ -232,12 +306,7 @@ def test_manual_carrier_amount_and_reset():
 
 
 def test_carrier_survives_restart_without_double_counting():
-    """Reproduces the "pumped carrier on restart" bug.
-
-    On startup the app loads the persisted state and then replays journal
-    history on top. CargoTransfer deltas must not be re-applied to the loaded
-    carrier snapshot, or the totals inflate every launch.
-    """
+    """Reproduces the "pumped carrier on restart" bug: on startup the app loads persisted state then replays journal history on top, so CargoTransfer deltas must not be re-applied to the loaded carrier snapshot or the totals inflate every launch."""
     transfers = [
         {"event": "CargoTransfer", "timestamp": "2026-07-06T10:00:00Z",
          "Transfers": [{"Type": "steel", "Count": 500, "Direction": "tocarrier"}]},
@@ -281,12 +350,7 @@ def test_carrier_applies_transfers_newer_than_watermark():
 
 
 def test_legacy_cache_without_watermark_is_not_reinflated():
-    """A pre-watermark cache should trust its carrier snapshot on migration.
-
-    Old state.json files have no ``last_event_time``; replaying history must not
-    re-add transfers on top of the persisted amounts. The gate reopens after
-    replay so live transfers still count.
-    """
+    """A pre-watermark cache should trust its carrier snapshot on migration: old state.json files have no ``last_event_time``, so replaying history must not re-add transfers on top of the persisted amounts; the gate reopens after replay so live transfers still count."""
     old_transfer = {
         "event": "CargoTransfer", "timestamp": "2026-07-06T10:00:00Z",
         "Transfers": [{"Type": "steel", "Count": 500, "Direction": "tocarrier"}],
@@ -326,7 +390,8 @@ def test_serialisation_roundtrip():
     # Carrier tracking survives a save/load cycle.
     assert restored.carrier_cargo["aluminium"] == 300
     assert restored.carrier_callsign == "PQ7-XYZ"
-    assert restored.carrier_total == 900
+    # 900 t aboard at the last snapshot, plus the 300 t moved aboard since.
+    assert restored.carrier_total == 1200
 
 
 #  regression tests for the logic-hole fixes 
@@ -366,8 +431,7 @@ def test_empty_inline_cargo_inventory_clears_hold():
 
 
 def test_live_transfer_in_same_second_as_replay_end_is_applied():
-    """The replay gate must not swallow a live transfer that lands within the
-    same second the replayed history ended (journal ts resolution is 1 s)."""
+    """The replay gate must not swallow a live transfer that lands within the same second the replayed history ended (journal ts resolution is 1 s)."""
     live = AppState()
     old = {"event": "CargoTransfer", "timestamp": "2026-07-06T10:00:00Z",
            "Transfers": [{"Type": "steel", "Count": 100, "Direction": "tocarrier"}]}
@@ -411,11 +475,15 @@ def test_display_names_survive_cache_round_trip():
         ],
     })
     payload = state.to_dict()
-    # Simulate a fresh process whose registry never saw the journal event.
-    commodities._DISPLAY_REGISTRY.pop("edsc_testium", None)
-    restored = AppState.from_dict(payload)
-    row = restored.projects[9].rows({})[0]
-    assert row.name == "EDSC Testium"  # not the "Edsc Testium" fallback
+    try:
+        # Simulate a fresh process whose registry never saw the journal event.
+        commodities._DISPLAY_REGISTRY.pop("edsc_testium", None)
+        restored = AppState.from_dict(payload)
+        row = restored.projects[9].rows({})[0]
+        assert row.name == "EDSC Testium"  # not the "Edsc Testium" fallback
+    finally:
+        # The registry is module-global; don't leak the fake key to other tests.
+        commodities._DISPLAY_REGISTRY.pop("edsc_testium", None)
 
 
 def test_removed_project_stays_removed_until_new_depot_event():
@@ -426,8 +494,7 @@ def test_removed_project_stays_removed_until_new_depot_event():
     assert state.remove_project(7) is True
     assert 7 not in state.projects
 
-    # Replaying the same historical depot event must not resurrect it,
-    # including after a save/load cycle.
+    # Replaying the same historical depot event must not resurrect it, including after a save/load cycle.
     state.apply_event(depot_old)
     assert 7 not in state.projects
     reloaded = AppState.from_dict(state.to_dict())
@@ -501,9 +568,7 @@ def test_location_event_restores_docked_state():
 
 
 def test_docked_at_colonisation_ship_gets_site_type_prefix():
-    # Real journal shape: the raw StationName embeds the future station's
-    # name after the token, and there is no StationName_Localised fallback.
-    # Rendered like the game's other construction docks: "<site type>: <name>".
+    # Real journal shape: the raw StationName embeds the future station's name after the token with no StationName_Localised fallback; rendered like the game's other construction docks: "<site type>: <name>".
     state = AppState()
     state.apply_event({
         "event": "Docked", "MarketID": 3967011330,
@@ -538,8 +603,7 @@ def test_clean_station_name_fallbacks():
 
 
 def test_token_station_name_heals_on_cache_load():
-    # Caches written before the fix hold the raw token name; loading one
-    # must clean it without waiting for a re-dock.
+    # Caches written before the fix hold the raw token name; loading one must clean it without waiting for a re-dock.
     state = AppState()
     state.apply_event(DOCKED)
     state.apply_event(DEPOT)
